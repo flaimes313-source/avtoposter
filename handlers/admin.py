@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from html import escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import Router, F
@@ -48,13 +49,15 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
         chat = await bot.get_chat(channel_id)
         member = await bot.get_chat_member(chat_id=channel_id, user_id=bot.id)
 
+        title = escape(chat.title or str(chat.id))
+
         if member.status in ("administrator", "creator"):
             if isinstance(member, ChatMemberAdministrator) and member.can_post_messages:
-                return True, f"✅ {chat.title} — есть право публикации"
-            return False, f"⚠️ {chat.title} — админ, но без права публикации"
-        return False, f"❌ {chat.title} — бот не админ канала"
+                return True, f"✅ {title} — есть право публикации"
+            return False, f"⚠️ {title} — админ, но без права публикации"
+        return False, f"❌ {title} — бот не админ канала"
     except Exception as e:
-        return False, f"❌ Ошибка: {e}"
+        return False, f"❌ Ошибка: {escape(str(e))}"
 
 
 # ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ (получить ID канала) ====================
@@ -63,12 +66,12 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
 async def get_forwarded_channel_id(message: Message):
     """Ловим пересланные из канала сообщения и показываем ID канала."""
     chat = message.forward_from_chat
-    # Запоминаем канал в БД, чтобы потом он был в списке «известных»
     if chat.title:
         save_known_channel(chat.id, chat.title)
 
+    title = escape(chat.title or str(chat.id))
     await message.answer(
-        f"📢 Канал: <b>{chat.title}</b>\n"
+        f"📢 Канал: <b>{title}</b>\n"
         f"🆔 ID: <code>{chat.id}</code>\n\n"
         f"Скопируйте ID и введите его при создании поста или в проверке каналов.",
         parse_mode="HTML"
@@ -85,7 +88,7 @@ async def start_handler(message: Message):
     tz = get_user_timezone(message.from_user.id)
     await message.answer(
         f"👋 Добро пожаловать в панель управления автопостингом!\n"
-        f"🕒 Ваш часовой пояс: <b>{tz}</b>\n\n"
+        f"🕒 Ваш часовой пояс: <b>{escape(tz)}</b>\n\n"
         f"Сменить пояс: /timezone\n\n"
         f"💡 Чтобы узнать ID канала — перешлите сюда любое сообщение из него.",
         reply_markup=main_menu(),
@@ -108,7 +111,7 @@ async def timezone_cmd(message: Message, state: FSMContext):
         return
     current = get_user_timezone(message.from_user.id)
     await message.answer(
-        f"🕒 Текущий пояс: <b>{current}</b>\n\n"
+        f"🕒 Текущий пояс: <b>{escape(current)}</b>\n\n"
         f"Введите новый часовой пояс в формате IANA, например:\n"
         f"<code>Europe/Moscow</code>\n"
         f"<code>Europe/Berlin</code>\n"
@@ -133,7 +136,7 @@ async def timezone_set(message: Message, state: FSMContext):
     set_user_timezone(message.from_user.id, tz_name)
     await state.clear()
     await message.answer(
-        f"✅ Пояс установлен: <b>{tz_name}</b>",
+        f"✅ Пояс установлен: <b>{escape(tz_name)}</b>",
         reply_markup=main_menu(),
         parse_mode="HTML"
     )
@@ -169,15 +172,13 @@ async def check_channels_menu(call: CallbackQuery, state: FSMContext, bot):
 
 @router.message(PostForm.waiting_channel_to_check)
 async def check_single_channel(message: Message, state: FSMContext, bot):
-    # Если переслали из канала — обработает хендлер forward_from_chat выше,
-    # но на всякий случай поддержим и обычный ввод
     channel_id = message.text.strip() if message.text else None
     if not channel_id:
         await message.answer("❌ Введите ID или @username канала.")
         return
 
     ok, msg = await check_bot_in_channel(bot, channel_id)
-    await message.answer(msg, reply_markup=main_menu())
+    await message.answer(msg, reply_markup=main_menu(), parse_mode="HTML")
     await state.clear()
 
 
@@ -194,7 +195,7 @@ async def create_post_start(call: CallbackQuery, state: FSMContext):
 async def media_chosen(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if data.get("is_ad"):
-        return  # реклама обрабатывается отдельным хендлером ниже
+        return
 
     media_type = call.data.replace("media_", "")
     await state.update_data(media_type=media_type, is_ad=False)
@@ -317,7 +318,7 @@ async def time_only_received(message: Message, state: FSMContext):
     await state.update_data(scheduled_time=utc_dt.isoformat())
     await message.answer(
         f"✅ Время сохранено:\n"
-        f"🕒 Локально ({tz_name}): <b>{local_dt.strftime('%Y-%m-%d %H:%M')}</b>\n"
+        f"🕒 Локально ({escape(tz_name)}): <b>{local_dt.strftime('%Y-%m-%d %H:%M')}</b>\n"
         f"🌐 UTC: <b>{utc_dt.strftime('%Y-%m-%d %H:%M')}</b>\n\n"
         f"Введите ID канала (например, <code>-1001234567890</code> или <code>@username</code>):\n"
         f"💡 Не знаете ID? Перешлите сюда сообщение из канала.",
@@ -333,7 +334,8 @@ async def channel_received(message: Message, state: FSMContext, bot):
     ok, msg = await check_bot_in_channel(bot, channel_id)
     if not ok:
         await message.answer(
-            f"{msg}\n\nПопробуйте снова или перешлите сообщение из канала, чтобы узнать ID."
+            f"{msg}\n\nПопробуйте снова или перешлите сообщение из канала, чтобы узнать ID.",
+            parse_mode="HTML"
         )
         return
 
@@ -369,11 +371,11 @@ async def list_posts(call: CallbackQuery):
         utc_dt = datetime.fromisoformat(scheduled_iso)
         local_dt = utc_dt.astimezone(user_tz)
         status = "✅ отправлен" if is_sent else "⏳ ожидает"
-        preview = (text or "")[:30].replace("\n", " ")
+        preview = escape((text or "")[:30].replace("\n", " "))
         lines.append(
             f"#{pid} | {status}\n"
-            f"  📢 {channel_id}\n"
-            f"  🕒 {local_dt.strftime('%Y-%m-%d %H:%M')} ({tz_name})\n"
+            f"  📢 {escape(str(channel_id))}\n"
+            f"  🕒 {local_dt.strftime('%Y-%m-%d %H:%M')} ({escape(tz_name)})\n"
             f"  📝 {preview}...\n"
         )
     await call.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=main_menu())
@@ -478,7 +480,7 @@ async def ad_channel_received(message: Message, state: FSMContext, bot):
 
     ok, msg = await check_bot_in_channel(bot, channel_id)
     if not ok:
-        await message.answer(f"{msg}\n\nПопробуйте снова:")
+        await message.answer(f"{msg}\n\nПопробуйте снова:", parse_mode="HTML")
         return
 
     add_ad_post(
@@ -507,6 +509,9 @@ async def ad_channel_received(message: Message, state: FSMContext, bot):
             await bot.send_message(chat_id=channel_id, text=full_text)
         await message.answer("✅ Рекламный пост опубликован!", reply_markup=main_menu())
     except Exception as e:
-        await message.answer(f"❌ Ошибка публикации: <code>{e}</code>", parse_mode="HTML")
+        await message.answer(
+            f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",
+            parse_mode="HTML"
+        )
 
     await state.clear()
