@@ -12,7 +12,7 @@ from aiogram_calendar import SimpleCalendar, SimpleCalendarCallback
 from config import ADMIN_ID
 from database import (
     add_post, add_ad_post, get_user_timezone, set_user_timezone,
-    get_user_posts, get_known_channels
+    get_user_posts, get_known_channels, save_known_channel
 )
 from keyboards import main_menu, media_type_kb, skip_kb
 
@@ -20,6 +20,7 @@ router = Router()
 
 
 class PostForm(StatesGroup):
+    # Создание отложенного поста
     waiting_media = State()
     waiting_text = State()
     waiting_links = State()
@@ -27,12 +28,15 @@ class PostForm(StatesGroup):
     waiting_calendar = State()
     waiting_time_only = State()
     waiting_channel = State()
+    # Рекламный пост
     waiting_ad_media = State()
     waiting_ad_text = State()
     waiting_ad_links = State()
     waiting_ad_emojis = State()
     waiting_ad_channel = State()
+    # Часовой пояс
     waiting_timezone = State()
+    # Проверка каналов
     waiting_channel_to_check = State()
 
 
@@ -53,6 +57,24 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
         return False, f"❌ Ошибка: {e}"
 
 
+# ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ (получить ID канала) ====================
+
+@router.message(F.forward_from_chat)
+async def get_forwarded_channel_id(message: Message):
+    """Ловим пересланные из канала сообщения и показываем ID канала."""
+    chat = message.forward_from_chat
+    # Запоминаем канал в БД, чтобы потом он был в списке «известных»
+    if chat.title:
+        save_known_channel(chat.id, chat.title)
+
+    await message.answer(
+        f"📢 Канал: <b>{chat.title}</b>\n"
+        f"🆔 ID: <code>{chat.id}</code>\n\n"
+        f"Скопируйте ID и введите его при создании поста или в проверке каналов.",
+        parse_mode="HTML"
+    )
+
+
 # ==================== СТАРТ ====================
 
 @router.message(F.text == "/start")
@@ -64,7 +86,8 @@ async def start_handler(message: Message):
     await message.answer(
         f"👋 Добро пожаловать в панель управления автопостингом!\n"
         f"🕒 Ваш часовой пояс: <b>{tz}</b>\n\n"
-        f"Сменить пояс: /timezone",
+        f"Сменить пояс: /timezone\n\n"
+        f"💡 Чтобы узнать ID канала — перешлите сюда любое сообщение из него.",
         reply_markup=main_menu(),
         parse_mode="HTML"
     )
@@ -89,7 +112,8 @@ async def timezone_cmd(message: Message, state: FSMContext):
         f"Введите новый часовой пояс в формате IANA, например:\n"
         f"<code>Europe/Moscow</code>\n"
         f"<code>Europe/Berlin</code>\n"
-        f"<code>Asia/Almaty</code>",
+        f"<code>Asia/Almaty</code>\n"
+        f"<code>America/New_York</code>",
         parse_mode="HTML"
     )
     await state.set_state(PostForm.waiting_timezone)
@@ -108,8 +132,11 @@ async def timezone_set(message: Message, state: FSMContext):
         return
     set_user_timezone(message.from_user.id, tz_name)
     await state.clear()
-    await message.answer(f"✅ Пояс установлен: <b>{tz_name}</b>",
-                         reply_markup=main_menu(), parse_mode="HTML")
+    await message.answer(
+        f"✅ Пояс установлен: <b>{tz_name}</b>",
+        reply_markup=main_menu(),
+        parse_mode="HTML"
+    )
 
 
 # ==================== ПРОВЕРКА КАНАЛОВ ====================
@@ -121,7 +148,7 @@ async def check_channels_menu(call: CallbackQuery, state: FSMContext, bot):
     lines = ["🔍 <b>Проверка каналов</b>\n"]
 
     if known:
-        lines.append("📌 Известные каналы (в которых был замечен бот):")
+        lines.append("📌 Известные каналы:")
         for chat_id, title in known:
             ok, msg = await check_bot_in_channel(bot, chat_id)
             lines.append(f"• {msg}")
@@ -131,7 +158,8 @@ async def check_channels_menu(call: CallbackQuery, state: FSMContext, bot):
 
     lines.append(
         "Чтобы проверить конкретный канал, отправьте его ID или @username.\n"
-        "Например: <code>-1001234567890</code> или <code>@my_channel</code>"
+        "Например: <code>-1001234567890</code> или <code>@my_channel</code>\n\n"
+        "💡 Не знаете ID? Перешлите сюда любое сообщение из канала."
     )
 
     await call.message.edit_text("\n".join(lines), parse_mode="HTML")
@@ -141,7 +169,13 @@ async def check_channels_menu(call: CallbackQuery, state: FSMContext, bot):
 
 @router.message(PostForm.waiting_channel_to_check)
 async def check_single_channel(message: Message, state: FSMContext, bot):
-    channel_id = message.text.strip()
+    # Если переслали из канала — обработает хендлер forward_from_chat выше,
+    # но на всякий случай поддержим и обычный ввод
+    channel_id = message.text.strip() if message.text else None
+    if not channel_id:
+        await message.answer("❌ Введите ID или @username канала.")
+        return
+
     ok, msg = await check_bot_in_channel(bot, channel_id)
     await message.answer(msg, reply_markup=main_menu())
     await state.clear()
@@ -160,7 +194,7 @@ async def create_post_start(call: CallbackQuery, state: FSMContext):
 async def media_chosen(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if data.get("is_ad"):
-        return  # реклама обрабатывается отдельно
+        return  # реклама обрабатывается отдельным хендлером ниже
 
     media_type = call.data.replace("media_", "")
     await state.update_data(media_type=media_type, is_ad=False)
@@ -282,10 +316,11 @@ async def time_only_received(message: Message, state: FSMContext):
 
     await state.update_data(scheduled_time=utc_dt.isoformat())
     await message.answer(
-        f"✅ Время:\n"
+        f"✅ Время сохранено:\n"
         f"🕒 Локально ({tz_name}): <b>{local_dt.strftime('%Y-%m-%d %H:%M')}</b>\n"
         f"🌐 UTC: <b>{utc_dt.strftime('%Y-%m-%d %H:%M')}</b>\n\n"
-        f"Введите ID канала (например, <code>-1001234567890</code> или <code>@username</code>):",
+        f"Введите ID канала (например, <code>-1001234567890</code> или <code>@username</code>):\n"
+        f"💡 Не знаете ID? Перешлите сюда сообщение из канала.",
         parse_mode="HTML"
     )
     await state.set_state(PostForm.waiting_channel)
@@ -297,7 +332,9 @@ async def channel_received(message: Message, state: FSMContext, bot):
 
     ok, msg = await check_bot_in_channel(bot, channel_id)
     if not ok:
-        await message.answer(f"{msg}\n\nПопробуйте снова:")
+        await message.answer(
+            f"{msg}\n\nПопробуйте снова или перешлите сообщение из канала, чтобы узнать ID."
+        )
         return
 
     data = await state.get_data()
