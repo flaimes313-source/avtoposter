@@ -5,11 +5,9 @@ DB_PATH = "autoposter.db"
 
 
 def init_db():
-    """Создаёт таблицы при первом запуске."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Таблица пользователей (для хранения часового пояса)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -17,8 +15,6 @@ def init_db():
         )
     """)
 
-    # Таблица для хранения отложенных постов
-    # ВАЖНО: scheduled_time хранится в UTC (ISO-формат)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +31,6 @@ def init_db():
         )
     """)
 
-    # Таблица для рекламных постов
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ad_posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,6 +44,15 @@ def init_db():
         )
     """)
 
+    # Новое: известные каналы (куда бот был добавлен)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS known_channels (
+            chat_id TEXT PRIMARY KEY,
+            title TEXT,
+            added_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -56,7 +60,6 @@ def init_db():
 # ==================== USERS ====================
 
 def get_user_timezone(user_id: int) -> str:
-    """Возвращает часовой пояс пользователя. Если нет — создаёт запись с дефолтным."""
     from config import DEFAULT_TIMEZONE
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -77,7 +80,6 @@ def get_user_timezone(user_id: int) -> str:
 
 
 def set_user_timezone(user_id: int, tz: str):
-    """Устанавливает часовой пояс пользователя."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -92,7 +94,6 @@ def set_user_timezone(user_id: int, tz: str):
 
 def add_post(user_id, channel_id, media_type, media_file_id, text,
              links, emojis, scheduled_time_utc):
-    """scheduled_time_utc — ISO-строка в UTC."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -108,7 +109,6 @@ def add_post(user_id, channel_id, media_type, media_file_id, text,
 
 
 def get_pending_posts(limit=10):
-    """Посты, время которых пришло (по UTC) и которые ещё не отправлены."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -133,7 +133,6 @@ def mark_sent(post_id: int):
 
 
 def get_user_posts(user_id: int, limit=20):
-    """Список постов конкретного пользователя (для команды /posts)."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -173,3 +172,33 @@ def get_last_ad_post(user_id: int):
     row = cursor.fetchone()
     conn.close()
     return row
+
+
+# ==================== KNOWN CHANNELS ====================
+
+def save_known_channel(chat_id, title):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO known_channels (chat_id, title) VALUES (?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title
+    """, (str(chat_id), title))
+    conn.commit()
+    conn.close()
+
+
+def remove_known_channel(chat_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM known_channels WHERE chat_id = ?", (str(chat_id),))
+    conn.commit()
+    conn.close()
+
+
+def get_known_channels():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id, title FROM known_channels ORDER BY added_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
