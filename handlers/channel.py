@@ -1,24 +1,19 @@
 from aiogram import Router
 from aiogram.types import Message, ChatMemberUpdated
 
-from database import save_known_channel, remove_known_channel
-
 router = Router()
 
 
 @router.channel_post()
 async def channel_post_handler(message: Message):
-    """Любой пост в канале — запоминаем канал."""
-    if message.chat and message.chat.title:
-        save_known_channel(message.chat.id, message.chat.title)
+    """Ловим посты в канале — можно использовать для авто-реакций.
+    Сейчас ничего не делаем, канал пользователь добавляет через «📡 Мои каналы»."""
+    pass
 
 
 @router.my_chat_member()
 async def on_bot_membership_change(update: ChatMemberUpdated):
-    """Реагируем на добавление/удаление бота в канал."""
-    status = update.new_chat_member.status
-    chat = update.chat
-    if status in ("administrator", "member"):
-        save_known_channel(chat.id, chat.title or str(chat.id))
-    elif status in ("left", "kicked"):
-        remove_known_channel(chat.id)
+    """Реагируем на добавление/удаление бота в канал.
+    Запоминать здесь канал в user_channels нельзя — мы не знаем, кто владелец.
+    Пользователь сам добавит канал через «📡 Мои каналы» → «➕ Добавить канал»."""
+    pass
