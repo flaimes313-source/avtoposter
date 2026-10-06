@@ -1,5 +1,6 @@
 import json
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timezone
 from html import escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -89,7 +90,8 @@ async def start_handler(message: Message):
     await message.answer(
         f"👋 Добро пожаловать в панель управления автопостингом!\n"
         f"🕒 Ваш часовой пояс: <b>{escape(tz)}</b>\n\n"
-        f"Сменить пояс: /timezone\n\n"
+        f"Сменить пояс: /timezone\n"
+        f"Отладка БД: /debug\n\n"
         f"💡 Чтобы узнать ID канала — перешлите сюда любое сообщение из него.",
         reply_markup=main_menu(),
         parse_mode="HTML"
@@ -101,6 +103,53 @@ async def back_main(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.edit_text("👋 Главное меню", reply_markup=main_menu())
     await call.answer()
+
+
+# ==================== ОТЛАДКА ====================
+
+@router.message(F.text == "/debug")
+async def debug_db(message: Message):
+    """Показать содержимое таблицы posts для отладки."""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    conn = sqlite3.connect("autoposter.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, channel_id, media_type, scheduled_time, is_sent
+        FROM posts ORDER BY id DESC LIMIT 15
+    """)
+    rows = cursor.fetchall()
+
+    cursor.execute("SELECT COUNT(*) FROM posts WHERE is_sent = 0")
+    pending = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM posts WHERE is_sent = 1")
+    sent = cursor.fetchone()[0]
+
+    conn.close()
+
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    lines = [
+        f"🕒 <b>Сейчас UTC:</b> <code>{escape(now_utc)}</code>",
+        f"📊 Не отправлено: <b>{pending}</b>",
+        f"📊 Отправлено: <b>{sent}</b>\n",
+        "<b>Последние 15 постов:</b>"
+    ]
+
+    if not rows:
+        lines.append("📭 Таблица posts пуста")
+    else:
+        for pid, ch, mt, st, is_sent in rows:
+            status = "✅" if is_sent else "⏳"
+            lines.append(
+                f"{status} #{pid} | ch=<code>{escape(str(ch))}</code>\n"
+                f"    type={escape(str(mt))} | time=<code>{escape(str(st))}</code>"
+            )
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 # ==================== ЧАСОВОЙ ПОЯС ====================
