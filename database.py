@@ -44,12 +44,15 @@ def init_db():
         )
     """)
 
-    # Новое: известные каналы (куда бот был добавлен)
+    # Каналы, привязанные к конкретному пользователю
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS known_channels (
-            chat_id TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS user_channels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            chat_id TEXT,
             title TEXT,
-            added_at TEXT DEFAULT CURRENT_TIMESTAMP
+            added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, chat_id)
         )
     """)
 
@@ -174,31 +177,37 @@ def get_last_ad_post(user_id: int):
     return row
 
 
-# ==================== KNOWN CHANNELS ====================
+# ==================== USER CHANNELS ====================
 
-def save_known_channel(chat_id, title):
+def add_user_channel(user_id: int, chat_id: str, title: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO known_channels (chat_id, title) VALUES (?, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title
-    """, (str(chat_id), title))
+        INSERT INTO user_channels (user_id, chat_id, title) VALUES (?, ?, ?)
+        ON CONFLICT(user_id, chat_id) DO UPDATE SET title = excluded.title
+    """, (user_id, str(chat_id), title))
     conn.commit()
     conn.close()
 
 
-def remove_known_channel(chat_id):
+def get_user_channels(user_id: int):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM known_channels WHERE chat_id = ?", (str(chat_id),))
-    conn.commit()
-    conn.close()
-
-
-def get_known_channels():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT chat_id, title FROM known_channels ORDER BY added_at DESC")
+    cursor.execute("""
+        SELECT chat_id, title FROM user_channels
+        WHERE user_id = ?
+        ORDER BY added_at DESC
+    """, (user_id,))
     rows = cursor.fetchall()
     conn.close()
     return rows
+
+
+def remove_user_channel(user_id: int, chat_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        DELETE FROM user_channels WHERE user_id = ? AND chat_id = ?
+    """, (user_id, str(chat_id)))
+    conn.commit()
+    conn.close()

@@ -14,9 +14,12 @@ from aiogram_calendar import SimpleCalendar, SimpleCalendarCallback
 from config import ADMIN_ID
 from database import (
     add_post, add_ad_post, get_user_timezone, set_user_timezone,
-    get_user_posts, get_known_channels, save_known_channel
+    get_user_posts, add_user_channel, get_user_channels, remove_user_channel
 )
-from keyboards import main_menu, media_type_kb, skip_kb
+from keyboards import (
+    main_menu, media_type_kb, skip_kb,
+    channels_select_kb, my_channels_kb
+)
 
 router = Router()
 
@@ -29,15 +32,17 @@ class PostForm(StatesGroup):
     waiting_emojis = State()
     waiting_calendar = State()
     waiting_time_only = State()
-    waiting_channel = State()
+    waiting_channel_pick = State()          # выбор канала кнопкой
     # Рекламный пост
     waiting_ad_media = State()
     waiting_ad_text = State()
     waiting_ad_links = State()
     waiting_ad_emojis = State()
-    waiting_ad_channel = State()
+    waiting_ad_channel_pick = State()       # выбор канала кнопкой
     # Часовой пояс
     waiting_timezone = State()
+    # Добавление нового канала
+    waiting_new_channel = State()
     # Проверка каналов
     waiting_channel_to_check = State()
 
@@ -61,22 +66,36 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
         return False, f"❌ Ошибка: {escape(str(e))}"
 
 
-# ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ (получить ID канала) ====================
+# ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ (только для добавления канала) ====================
 
 @router.message(F.forward_from_chat)
-async def get_forwarded_channel_id(message: Message):
-    """Ловим пересланные из канала сообщения и показываем ID канала."""
+async def get_forwarded_channel_id(message: Message, state: FSMContext, bot):
+    """Обрабатывает пересланные из канала сообщения.
+    Если пользователь в состоянии waiting_new_channel — сохраняем канал.
+    Иначе просто показываем ID."""
     chat = message.forward_from_chat
-    if chat.title:
-        save_known_channel(chat.id, chat.title)
+    title = chat.title or str(chat.id)
+    channel_id = str(chat.id)
 
-    title = escape(chat.title or str(chat.id))
+    current_state = await state.get_state()
+
+    # Показываем ID пользователю (всегда)
     await message.answer(
-        f"📢 Канал: <b>{title}</b>\n"
-        f"🆔 ID: <code>{chat.id}</code>\n\n"
-        f"Скопируйте ID и введите его при создании поста или в проверке каналов.",
+        f"📢 Канал: <b>{escape(title)}</b>\n"
+        f"🆔 ID: <code>{channel_id}</code>",
         parse_mode="HTML"
     )
+
+    if current_state == PostForm.waiting_new_channel.state:
+        # Сохраняем канал
+        add_user_channel(message.from_user.id, channel_id, title)
+        await state.clear()
+        channels = get_user_channels(message.from_user.id)
+        await message.answer(
+            f"✅ Канал «{escape(title)}» добавлен в ваш список!",
+            reply_markup=my_channels_kb(channels),
+            parse_mode="HTML"
+        )
 
 
 # ==================== СТАРТ ====================
@@ -92,7 +111,7 @@ async def start_handler(message: Message):
         f"🕒 Ваш часовой пояс: <b>{escape(tz)}</b>\n\n"
         f"Сменить пояс: /timezone\n"
         f"Отладка БД: /debug\n\n"
-        f"💡 Чтобы узнать ID канала — перешлите сюда любое сообщение из него.",
+        f"💡 Сначала добавьте канал через «📡 Мои каналы».",
         reply_markup=main_menu(),
         parse_mode="HTML"
     )
@@ -109,7 +128,6 @@ async def back_main(call: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "/debug")
 async def debug_db(message: Message):
-    """Показать содержимое таблицы posts для отладки."""
     if message.from_user.id != ADMIN_ID:
         return
 
@@ -128,6 +146,9 @@ async def debug_db(message: Message):
     cursor.execute("SELECT COUNT(*) FROM posts WHERE is_sent = 1")
     sent = cursor.fetchone()[0]
 
+    cursor.execute("SELECT chat_id, title FROM user_channels WHERE user_id = ?", (message.from_user.id,))
+    channels = cursor.fetchall()
+
     conn.close()
 
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -135,7 +156,8 @@ async def debug_db(message: Message):
     lines = [
         f"🕒 <b>Сейчас UTC:</b> <code>{escape(now_utc)}</code>",
         f"📊 Не отправлено: <b>{pending}</b>",
-        f"📊 Отправлено: <b>{sent}</b>\n",
+        f"📊 Отправлено: <b>{sent}</b>",
+        f"📡 Моих каналов: <b>{len(channels)}</b>\n",
         "<b>Последние 15 постов:</b>"
     ]
 
@@ -191,44 +213,75 @@ async def timezone_set(message: Message, state: FSMContext):
     )
 
 
+# ==================== МОИ КАНАЛЫ ====================
+
+@router.callback_query(F.data == "my_channels")
+async def my_channels_menu(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    channels = get_user_channels(call.from_user.id)
+
+    if not channels:
+        text = (
+            "📡 <b>Мои каналы</b>\n\n"
+            "У вас пока нет добавленных каналов.\n\n"
+            "Нажмите «➕ Добавить канал», затем перешлите боту любое сообщение из нужного канала."
+        )
+    else:
+        text = "📡 <b>Мои каналы</b>\n\nВыберите канал, чтобы удалить, или добавьте новый:"
+
+    await call.message.edit_text(
+        text, parse_mode="HTML",
+        reply_markup=my_channels_kb(channels)
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "add_channel")
+async def add_channel_start(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_text(
+        "➕ <b>Добавление канала</b>\n\n"
+        "1. Убедитесь, что бот добавлен в канал как админ с правом «Публикация сообщений».\n"
+        "2. Перешлите боту любое сообщение из этого канала.\n\n"
+        "Бот сам определит ID и сохранит канал в ваш список.",
+        parse_mode="HTML"
+    )
+    await state.set_state(PostForm.waiting_new_channel)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("del_channel:"))
+async def delete_channel(call: CallbackQuery, state: FSMContext):
+    chat_id = call.data.split(":", 1)[1]
+    remove_user_channel(call.from_user.id, chat_id)
+    channels = get_user_channels(call.from_user.id)
+    await call.message.edit_text(
+        "✅ Канал удалён из списка.",
+        reply_markup=my_channels_kb(channels)
+    )
+    await call.answer()
+
+
 # ==================== ПРОВЕРКА КАНАЛОВ ====================
 
 @router.callback_query(F.data == "check_channels")
 async def check_channels_menu(call: CallbackQuery, state: FSMContext, bot):
-    known = get_known_channels()
+    channels = get_user_channels(call.from_user.id)
 
     lines = ["🔍 <b>Проверка каналов</b>\n"]
 
-    if known:
-        lines.append("📌 Известные каналы:")
-        for chat_id, title in known:
+    if channels:
+        for chat_id, title in channels:
             ok, msg = await check_bot_in_channel(bot, chat_id)
             lines.append(f"• {msg}")
-        lines.append("")
     else:
-        lines.append("📭 Пока нет известных каналов.\n")
+        lines.append("📭 У вас пока нет добавленных каналов.\n")
 
     lines.append(
-        "Чтобы проверить конкретный канал, отправьте его ID или @username.\n"
-        "Например: <code>-1001234567890</code> или <code>@my_channel</code>\n\n"
-        "💡 Не знаете ID? Перешлите сюда любое сообщение из канала."
+        "\n💡 Добавить канал: «📡 Мои каналы» → «➕ Добавить канал»."
     )
 
-    await call.message.edit_text("\n".join(lines), parse_mode="HTML")
-    await state.set_state(PostForm.waiting_channel_to_check)
+    await call.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=main_menu())
     await call.answer()
-
-
-@router.message(PostForm.waiting_channel_to_check)
-async def check_single_channel(message: Message, state: FSMContext, bot):
-    channel_id = message.text.strip() if message.text else None
-    if not channel_id:
-        await message.answer("❌ Введите ID или @username канала.")
-        return
-
-    ok, msg = await check_bot_in_channel(bot, channel_id)
-    await message.answer(msg, reply_markup=main_menu(), parse_mode="HTML")
-    await state.clear()
 
 
 # ==================== СОЗДАНИЕ ПОСТА ====================
@@ -365,32 +418,35 @@ async def time_only_received(message: Message, state: FSMContext):
     utc_dt = local_dt.astimezone(ZoneInfo("UTC"))
 
     await state.update_data(scheduled_time=utc_dt.isoformat())
-    await message.answer(
-        f"✅ Время сохранено:\n"
-        f"🕒 Локально ({escape(tz_name)}): <b>{local_dt.strftime('%Y-%m-%d %H:%M')}</b>\n"
-        f"🌐 UTC: <b>{utc_dt.strftime('%Y-%m-%d %H:%M')}</b>\n\n"
-        f"Введите ID канала (например, <code>-1001234567890</code> или <code>@username</code>):\n"
-        f"💡 Не знаете ID? Перешлите сюда сообщение из канала.",
-        parse_mode="HTML"
-    )
-    await state.set_state(PostForm.waiting_channel)
 
-
-@router.message(PostForm.waiting_channel)
-async def channel_received(message: Message, state: FSMContext, bot):
-    channel_id = message.text.strip()
-
-    ok, msg = await check_bot_in_channel(bot, channel_id)
-    if not ok:
+    channels = get_user_channels(message.from_user.id)
+    if not channels:
         await message.answer(
-            f"{msg}\n\nПопробуйте снова или перешлите сообщение из канала, чтобы узнать ID.",
-            parse_mode="HTML"
+            "❌ У вас нет добавленных каналов.\n\n"
+            "Добавьте канал: «📡 Мои каналы» → «➕ Добавить канал».",
+            reply_markup=main_menu()
         )
+        await state.clear()
         return
 
+    await message.answer(
+        f"✅ Время:\n"
+        f"🕒 Локально ({escape(tz_name)}): <b>{local_dt.strftime('%Y-%m-%d %H:%M')}</b>\n"
+        f"🌐 UTC: <b>{utc_dt.strftime('%Y-%m-%d %H:%M')}</b>\n\n"
+        f"Выберите канал для публикации:",
+        parse_mode="HTML",
+        reply_markup=channels_select_kb(channels, action_prefix="pick_channel")
+    )
+    await state.set_state(PostForm.waiting_channel_pick)
+
+
+@router.callback_query(F.data.startswith("pick_channel:"))
+async def pick_channel(call: CallbackQuery, state: FSMContext):
+    channel_id = call.data.split(":", 1)[1]
     data = await state.get_data()
+
     add_post(
-        user_id=message.from_user.id,
+        user_id=call.from_user.id,
         channel_id=channel_id,
         media_type=data.get("media_type"),
         media_file_id=data.get("media_file_id"),
@@ -400,7 +456,8 @@ async def channel_received(message: Message, state: FSMContext, bot):
         scheduled_time_utc=data.get("scheduled_time")
     )
     await state.clear()
-    await message.answer("✅ Пост создан и запланирован!", reply_markup=main_menu())
+    await call.message.edit_text("✅ Пост создан и запланирован!", reply_markup=main_menu())
+    await call.answer()
 
 
 # ==================== СПИСОК ПОСТОВ ====================
@@ -504,36 +561,50 @@ async def ad_links_received(message: Message, state: FSMContext):
 @router.callback_query(F.data == "skip", PostForm.waiting_ad_emojis)
 async def ad_skip_emojis(call: CallbackQuery, state: FSMContext):
     await state.update_data(emojis=[])
+    channels = get_user_channels(call.from_user.id)
+    if not channels:
+        await call.message.edit_text(
+            "❌ У вас нет добавленных каналов. Добавьте через «📡 Мои каналы».",
+            reply_markup=main_menu()
+        )
+        await state.clear()
+        await call.answer()
+        return
+
     await call.message.edit_text(
-        "Введите ID канала для рекламы (например, <code>-1001234567890</code> или <code>@username</code>):",
-        parse_mode="HTML"
+        "Выберите канал для публикации рекламы:",
+        reply_markup=channels_select_kb(channels, action_prefix="pick_ad_channel")
     )
-    await state.set_state(PostForm.waiting_ad_channel)
+    await state.set_state(PostForm.waiting_ad_channel_pick)
     await call.answer()
 
 
 @router.message(PostForm.waiting_ad_emojis)
 async def ad_emojis_received(message: Message, state: FSMContext):
     await state.update_data(emojis=message.text.split())
-    await message.answer(
-        "Введите ID канала для рекламы (например, <code>-1001234567890</code> или <code>@username</code>):",
-        parse_mode="HTML"
-    )
-    await state.set_state(PostForm.waiting_ad_channel)
-
-
-@router.message(PostForm.waiting_ad_channel)
-async def ad_channel_received(message: Message, state: FSMContext, bot):
-    data = await state.get_data()
-    channel_id = message.text.strip()
-
-    ok, msg = await check_bot_in_channel(bot, channel_id)
-    if not ok:
-        await message.answer(f"{msg}\n\nПопробуйте снова:", parse_mode="HTML")
+    channels = get_user_channels(message.from_user.id)
+    if not channels:
+        await message.answer(
+            "❌ У вас нет добавленных каналов. Добавьте через «📡 Мои каналы».",
+            reply_markup=main_menu()
+        )
+        await state.clear()
         return
 
+    await message.answer(
+        "Выберите канал для публикации рекламы:",
+        reply_markup=channels_select_kb(channels, action_prefix="pick_ad_channel")
+    )
+    await state.set_state(PostForm.waiting_ad_channel_pick)
+
+
+@router.callback_query(F.data.startswith("pick_ad_channel:"))
+async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
+    channel_id = call.data.split(":", 1)[1]
+    data = await state.get_data()
+
     add_ad_post(
-        user_id=message.from_user.id,
+        user_id=call.from_user.id,
         media_type=data.get("media_type"),
         media_file_id=data.get("media_file_id"),
         text=data.get("text"),
@@ -556,11 +627,12 @@ async def ad_channel_received(message: Message, state: FSMContext, bot):
             await bot.send_animation(chat_id=channel_id, animation=data["media_file_id"], caption=full_text)
         else:
             await bot.send_message(chat_id=channel_id, text=full_text)
-        await message.answer("✅ Рекламный пост опубликован!", reply_markup=main_menu())
+        await call.message.edit_text("✅ Рекламный пост опубликован!", reply_markup=main_menu())
     except Exception as e:
-        await message.answer(
+        await call.message.edit_text(
             f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",
-            parse_mode="HTML"
+            parse_mode="HTML", reply_markup=main_menu()
         )
 
     await state.clear()
+    await call.answer()
