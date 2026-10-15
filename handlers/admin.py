@@ -1,13 +1,12 @@
 import json
-import sqlite3  # оставлен для /debug; при желании можно переписать на psycopg2
 import psycopg2
 from psycopg2.extras import DictCursor
 from datetime import datetime, timezone
 from html import escape
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, ChatMemberAdministrator
+from aiogram.types import Message, CallbackQuery, ChatMemberAdministrator, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -15,7 +14,7 @@ from aiogram_calendar import SimpleCalendar, SimpleCalendarCallback
 
 from config import ADMIN_ID, DATABASE_URL
 from database import (
-    add_post, add_ad_post, get_user_timezone, set_user_timezone,
+    add_post, add_ad_post, get_user_timezone,
     get_user_posts, add_user_channel, get_user_channels, remove_user_channel
 )
 from keyboards import (
@@ -45,8 +44,6 @@ class PostForm(StatesGroup):
     waiting_ad_button_name = State()
     waiting_ad_button_url = State()
     waiting_ad_channel_pick = State()
-    # Часовой пояс
-    waiting_timezone = State()
     # Добавление канала
     waiting_new_channel = State()
 
@@ -98,7 +95,7 @@ async def get_forwarded_channel_id(message: Message, state: FSMContext):
         )
 
 
-# ==================== СТАРТ / ОТЛАДКА / ЧАСОВОЙ ПОЯС ====================
+# ==================== ОТЛАДКА ====================
 
 @router.message(F.text == "/debug")
 async def debug_db(message: Message):
@@ -148,43 +145,6 @@ async def debug_db(message: Message):
             )
 
     await message.answer("\n".join(lines), parse_mode="HTML")
-
-
-@router.message(F.text == "/timezone")
-async def timezone_cmd(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    current = get_user_timezone(message.from_user.id)
-    await message.answer(
-        f"🕒 Текущий пояс: <b>{escape(current)}</b>\n\n"
-        f"Введите новый часовой пояс в формате IANA, например:\n"
-        f"<code>Europe/Moscow</code>\n"
-        f"<code>Europe/Berlin</code>\n"
-        f"<code>Asia/Almaty</code>\n"
-        f"<code>America/New_York</code>",
-        parse_mode="HTML"
-    )
-    await state.set_state(PostForm.waiting_timezone)
-
-
-@router.message(PostForm.waiting_timezone)
-async def timezone_set(message: Message, state: FSMContext):
-    tz_name = (message.text or "").strip()
-    try:
-        ZoneInfo(tz_name)
-    except ZoneInfoNotFoundError:
-        await message.answer(
-            "❌ Неизвестный пояс. Пример: <code>Europe/Moscow</code>",
-            parse_mode="HTML"
-        )
-        return
-    set_user_timezone(message.from_user.id, tz_name)
-    await state.clear()
-    await message.answer(
-        f"✅ Пояс установлен: <b>{escape(tz_name)}</b>",
-        reply_markup=main_menu(message.from_user.id == ADMIN_ID),
-        parse_mode="HTML"
-    )
 
 
 # ==================== МОИ КАНАЛЫ ====================
@@ -319,7 +279,7 @@ async def links_received(message: Message, state: FSMContext):
     await state.set_state(PostForm.waiting_emojis)
 
 
-# --- Эмодзи → кнопка ---
+# --- Эмодзи → кнопка → календарь ---
 
 @router.callback_query(F.data == "skip", PostForm.waiting_emojis)
 async def skip_emojis(call: CallbackQuery, state: FSMContext):
@@ -446,8 +406,10 @@ async def pick_channel(call: CallbackQuery, state: FSMContext):
         scheduled_time_utc=data.get("scheduled_time")
     )
     await state.clear()
-    await call.message.edit_text("✅ Пост создан и запланирован!",
-                                 reply_markup=main_menu(call.from_user.id == ADMIN_ID))
+    await call.message.edit_text(
+        "✅ Пост создан и запланирован!",
+        reply_markup=main_menu(call.from_user.id == ADMIN_ID)
+    )
     await call.answer()
 
 
@@ -457,8 +419,10 @@ async def pick_channel(call: CallbackQuery, state: FSMContext):
 async def list_posts(call: CallbackQuery):
     rows = get_user_posts(call.from_user.id)
     if not rows:
-        await call.message.edit_text("📭 У вас пока нет постов.",
-                                     reply_markup=main_menu(call.from_user.id == ADMIN_ID))
+        await call.message.edit_text(
+            "📭 У вас пока нет постов.",
+            reply_markup=main_menu(call.from_user.id == ADMIN_ID)
+        )
         await call.answer()
         return
 
@@ -478,8 +442,10 @@ async def list_posts(call: CallbackQuery):
             f"  🕒 {local_dt.strftime('%Y-%m-%d %H:%M')} ({escape(tz_name)})\n"
             f"  📝 {preview}...\n"
         )
-    await call.message.edit_text("\n".join(lines), parse_mode="HTML",
-                                 reply_markup=main_menu(call.from_user.id == ADMIN_ID))
+    await call.message.edit_text(
+        "\n".join(lines), parse_mode="HTML",
+        reply_markup=main_menu(call.from_user.id == ADMIN_ID)
+    )
     await call.answer()
 
 
@@ -625,8 +591,6 @@ async def ad_button_url_received(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("pick_ad_channel:"))
 async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
     channel_id = call.data.split(":", 1)[1]
     data = await state.get_data()
 
@@ -665,8 +629,10 @@ async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
         else:
             await bot.send_message(chat_id=channel_id, text=full_text, reply_markup=kb)
 
-        await call.message.edit_text("✅ Рекламный пост опубликован!",
-                                     reply_markup=main_menu(call.from_user.id == ADMIN_ID))
+        await call.message.edit_text(
+            "✅ Рекламный пост опубликован!",
+            reply_markup=main_menu(call.from_user.id == ADMIN_ID)
+        )
     except Exception as e:
         await call.message.edit_text(
             f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",

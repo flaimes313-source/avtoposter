@@ -1,11 +1,7 @@
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
 def main_menu(is_admin: bool = False):
-    """Главное меню: 2 колонки."""
     rows = [
         [
             InlineKeyboardButton(text="📝 Создать пост", callback_data="create_post"),
@@ -16,8 +12,11 @@ def main_menu(is_admin: bool = False):
             InlineKeyboardButton(text="📡 Мои каналы", callback_data="my_channels"),
         ],
         [
-            InlineKeyboardButton(text="🆘 Поддержка", callback_data="support"),
             InlineKeyboardButton(text="ℹ️ О боте", callback_data="about"),
+            InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+        ],
+        [
+            InlineKeyboardButton(text="🆘 Поддержка", callback_data="support"),
         ],
     ]
     if is_admin:
@@ -25,6 +24,29 @@ def main_menu(is_admin: bool = False):
             InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel"),
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def settings_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🕒 Часовой пояс", callback_data="settings_timezone")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="back_main")],
+    ])
+
+
+def timezone_presets_kb():
+    """Быстрые варианты популярных зон."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🇷🇺 Москва", callback_data="tz_set:Europe/Moscow"),
+            InlineKeyboardButton(text="🇰🇿 Алматы", callback_data="tz_set:Asia/Almaty"),
+        ],
+        [
+            InlineKeyboardButton(text="🇩🇪 Берлин", callback_data="tz_set:Europe/Berlin"),
+            InlineKeyboardButton(text="🇺🇸 Нью-Йорк", callback_data="tz_set:America/New_York"),
+        ],
+        [InlineKeyboardButton(text="✍️ Ввести вручную", callback_data="tz_manual")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="settings")],
+    ])
 
 
 def media_type_kb():
@@ -87,14 +109,13 @@ def support_kb():
 
 def admin_panel_kb(subscription_on: bool, open_tickets: int):
     sub_text = "🟢 Обязательная подписка: ВКЛ" if subscription_on else "🔴 Обязательная подписка: ВЫКЛ"
-    buttons = [
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"❓ Вопросы ({open_tickets})", callback_data="admin_tickets")],
         [InlineKeyboardButton(text="📣 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text=sub_text, callback_data="admin_toggle_sub")],
         [InlineKeyboardButton(text="📡 Каналы подписки", callback_data="admin_required_channels")],
         [InlineKeyboardButton(text="⬅ Назад", callback_data="back_main")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    ])
 
 
 def tickets_list_kb(tickets):
@@ -134,7 +155,6 @@ def required_channels_kb(channels):
 
 
 def subscription_check_kb(channels):
-    """Клавиатура с кнопками-ссылками на каналы, на которые надо подписаться."""
     buttons = []
     for ch in channels:
         url = ch["url"]
