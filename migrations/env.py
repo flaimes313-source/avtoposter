@@ -4,13 +4,12 @@ from alembic import context
 import os
 import sys
 
-# Добавляем корень проекта в PYTHONPATH, чтобы можно было импортировать config
+# Добавляем корень проекта в PYTHONPATH
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from config import DATABASE_URL
+from config import DATABASE_URL_SQLALCHEMY
 
 config = context.config
-# Подставляем DATABASE_URL из config
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+config.set_main_option("sqlalchemy.url", DATABASE_URL_SQLALCHEMY)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
