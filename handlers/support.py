@@ -1,3 +1,5 @@
+from html import escape
+
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -5,8 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_ID
 from database import add_support_message
-from keyboards import main_menu, support_kb
-from html import escape
+from keyboards import support_kb
 
 router = Router()
 
@@ -15,10 +16,10 @@ class SupportForm(StatesGroup):
     waiting_question = State()
 
 
-@router.callback_query(F.data == "support")
-async def support_menu(call: CallbackQuery, state: FSMContext):
+@router.message(F.text == "🆘 Поддержка")
+async def support_menu(message: Message, state: FSMContext):
     await state.clear()
-    await call.message.edit_text(
+    await message.answer(
         "🆘 <b>Поддержка</b>\n\n"
         "Если у вас есть вопрос или проблема — напишите, "
         "админ ответит вам в этом чате.\n\n"
@@ -26,7 +27,6 @@ async def support_menu(call: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
         reply_markup=support_kb()
     )
-    await call.answer()
 
 
 @router.callback_query(F.data == "support_write")
@@ -48,7 +48,6 @@ async def support_question_received(message: Message, state: FSMContext, bot: Bo
         text=message.text or "(пусто)"
     )
 
-    # Уведомляем админа
     try:
         await bot.send_message(
             chat_id=ADMIN_ID,
@@ -64,7 +63,4 @@ async def support_question_received(message: Message, state: FSMContext, bot: Bo
         pass
 
     await state.clear()
-    await message.answer(
-        "✅ Ваш вопрос отправлен! Админ ответит вам в этом чате.",
-        reply_markup=main_menu(message.from_user.id == ADMIN_ID)
-    )
+    await message.answer("✅ Ваш вопрос отправлен! Админ ответит вам в этом чате.")

@@ -8,7 +8,9 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_ID
 from database import get_user_timezone, set_user_timezone
-from keyboards import main_menu, settings_kb, timezone_presets_kb
+from keyboards import (
+    main_reply_kb, settings_kb, timezone_presets_kb
+)
 
 router = Router()
 
@@ -16,6 +18,8 @@ router = Router()
 class SettingsForm(StatesGroup):
     waiting_timezone = State()
 
+
+# ==================== /start ====================
 
 @router.message(F.text == "/start")
 async def cmd_start(message: Message, state: FSMContext):
@@ -30,23 +34,25 @@ async def cmd_start(message: Message, state: FSMContext):
         f"Планируйте посты в Telegram-каналы, отправляйте рекламу "
         f"и управляйте каналами."
     )
-    await message.answer(text, reply_markup=main_menu(is_admin), parse_mode="HTML")
+    await message.answer(text, reply_markup=main_reply_kb(is_admin), parse_mode="HTML")
 
 
-@router.callback_query(F.data == "back_main")
-async def back_main(call: CallbackQuery, state: FSMContext):
+@router.message(F.text == "🏠 Главное меню")
+async def reply_main_menu(message: Message, state: FSMContext):
     await state.clear()
-    is_admin = call.from_user.id == ADMIN_ID
-    await call.message.edit_text(
+    is_admin = message.from_user.id == ADMIN_ID
+    await message.answer(
         "🏠 <b>Главное меню</b>",
-        reply_markup=main_menu(is_admin),
+        reply_markup=main_reply_kb(is_admin),
         parse_mode="HTML"
     )
-    await call.answer()
 
 
-@router.callback_query(F.data == "about")
-async def about(call: CallbackQuery):
+# ==================== О БОТЕ ====================
+
+@router.message(F.text == "ℹ️ О боте")
+async def reply_about(message: Message, state: FSMContext):
+    await state.clear()
     text = (
         "ℹ️ <b>О боте</b>\n\n"
         "Этот бот помогает автоматически публиковать посты в ваши "
@@ -63,29 +69,23 @@ async def about(call: CallbackQuery):
         "с правом «Публикация сообщений».\n"
         "2. Откройте «📡 Мои каналы» → «➕ Добавить канал» → "
         "перешлите сообщение из канала.\n"
-        "3. Нажмите «📝 Создать пост» и заполните шаги.\n\n"
-        "<b>Настройки:</b> /start → «⚙️ Настройки»"
+        "3. Нажмите «📝 Создать пост» и заполните шаги.\n"
     )
-    await call.message.edit_text(
-        text, parse_mode="HTML",
-        reply_markup=main_menu(call.from_user.id == ADMIN_ID)
-    )
-    await call.answer()
+    await message.answer(text, parse_mode="HTML")
 
 
 # ==================== НАСТРОЙКИ ====================
 
-@router.callback_query(F.data == "settings")
-async def settings_menu(call: CallbackQuery, state: FSMContext):
+@router.message(F.text == "⚙️ Настройки")
+async def reply_settings(message: Message, state: FSMContext):
     await state.clear()
-    tz = get_user_timezone(call.from_user.id)
-    await call.message.edit_text(
+    tz = get_user_timezone(message.from_user.id)
+    await message.answer(
         f"⚙️ <b>Настройки</b>\n\n"
         f"🕒 Часовой пояс: <b>{escape(tz)}</b>",
         parse_mode="HTML",
         reply_markup=settings_kb()
     )
-    await call.answer()
 
 
 @router.callback_query(F.data == "settings_timezone")
@@ -98,6 +98,26 @@ async def settings_timezone(call: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
         reply_markup=timezone_presets_kb()
     )
+    await call.answer()
+
+
+@router.callback_query(F.data == "settings_back")
+async def settings_back(call: CallbackQuery, state: FSMContext):
+    tz = get_user_timezone(call.from_user.id)
+    await call.message.edit_text(
+        f"⚙️ <b>Настройки</b>\n\n🕒 Часовой пояс: <b>{escape(tz)}</b>",
+        parse_mode="HTML",
+        reply_markup=settings_kb()
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "settings_close")
+async def settings_close(call: CallbackQuery):
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
     await call.answer()
 
 
@@ -151,3 +171,15 @@ async def tz_manual_set(message: Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=settings_kb()
     )
+
+
+# ==================== УНИВЕРСАЛЬНАЯ ОТМЕНА ====================
+
+@router.callback_query(F.data == "cancel")
+async def cancel_action(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await call.message.edit_text("❌ Действие отменено.")
+    except Exception:
+        pass
+    await call.answer()

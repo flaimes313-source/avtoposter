@@ -1,8 +1,11 @@
+from html import escape
+
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from html import escape
 
 from config import ADMIN_ID
 from database import (
@@ -12,7 +15,7 @@ from database import (
     get_all_user_ids
 )
 from keyboards import (
-    main_menu, admin_panel_kb, tickets_list_kb, ticket_actions_kb,
+    admin_panel_kb, tickets_list_kb, ticket_actions_kb,
     required_channels_kb, skip_button_kb
 )
 
@@ -34,21 +37,33 @@ class AdminForm(StatesGroup):
 
 # ==================== ГЛАВНАЯ АДМИНКА ====================
 
+@router.message(F.text == "⚙️ Админ-панель")
+async def admin_panel_entry(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    sub_on = is_subscription_required()
+    tickets = get_open_support_messages()
+    await message.answer(
+        "⚙️ <b>Админ-панель</b>\n\n"
+        "Управляйте вопросами, рассылками и обязательной подпиской.",
+        parse_mode="HTML",
+        reply_markup=admin_panel_kb(sub_on, len(tickets))
+    )
+
+
 @router.callback_query(F.data == "admin_panel")
-async def admin_panel(call: CallbackQuery, state: FSMContext):
+async def admin_panel_cb(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
     await state.clear()
-
     sub_on = is_subscription_required()
     tickets = get_open_support_messages()
-    text = (
-        "⚙️ <b>Админ-панель</b>\n\n"
-        "Управляйте вопросами, рассылками и обязательной подпиской."
-    )
     await call.message.edit_text(
-        text, parse_mode="HTML",
+        "⚙️ <b>Админ-панель</b>\n\n"
+        "Управляйте вопросами, рассылками и обязательной подпиской.",
+        parse_mode="HTML",
         reply_markup=admin_panel_kb(sub_on, len(tickets))
     )
     await call.answer()
@@ -66,15 +81,12 @@ async def admin_tickets(call: CallbackQuery, state: FSMContext):
     tickets = get_open_support_messages()
     if not tickets:
         text = "📭 Открытых вопросов нет."
+        kb = admin_panel_kb(is_subscription_required(), 0)
     else:
         text = f"❓ <b>Открытые вопросы:</b> {len(tickets)}\n\nВыберите, чтобы открыть."
+        kb = tickets_list_kb(tickets)
 
-    await call.message.edit_text(
-        text, parse_mode="HTML",
-        reply_markup=tickets_list_kb(tickets) if tickets else admin_panel_kb(
-            is_subscription_required(), 0
-        )
-    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await call.answer()
 
 
@@ -104,9 +116,7 @@ async def admin_ticket_reply(call: CallbackQuery, state: FSMContext):
         return
     ticket_id = int(call.data.split(":")[1])
     await state.update_data(ticket_id=ticket_id)
-    await call.message.edit_text(
-        "✍️ Напишите ответ одним сообщением — он уйдёт пользователю."
-    )
+    await call.message.edit_text("✍️ Напишите ответ одним сообщением — он уйдёт пользователю.")
     await state.set_state(AdminForm.waiting_reply_text)
     await call.answer()
 
@@ -122,20 +132,17 @@ async def admin_reply_sent(message: Message, state: FSMContext, bot: Bot):
     try:
         await bot.send_message(
             chat_id=t["user_id"],
-            text=(
-                f"💬 <b>Ответ поддержки</b>\n\n"
-                f"{escape(message.text or '')}"
-            ),
+            text=f"💬 <b>Ответ поддержки</b>\n\n{escape(message.text or '')}",
             parse_mode="HTML"
         )
     except Exception as e:
-        await message.answer(f"❌ Не удалось отправить: <code>{escape(str(e))}</code>", parse_mode="HTML")
+        await message.answer(f"❌ Не удалось отправить: <code>{escape(str(e))}</code>",
+                             parse_mode="HTML")
         return
 
     mark_support_answered(ticket_id)
     await state.clear()
-    await message.answer("✅ Ответ отправлен пользователю.",
-                         reply_markup=main_menu(True))
+    await message.answer("✅ Ответ отправлен пользователю.")
 
 
 @router.callback_query(F.data.startswith("admin_ticket_close:"))
@@ -144,11 +151,11 @@ async def admin_ticket_close(call: CallbackQuery, state: FSMContext):
         return
     ticket_id = int(call.data.split(":")[1])
     mark_support_answered(ticket_id)
-    await call.message.edit_text("✅ Вопрос закрыт без ответа.",
-                                 reply_markup=admin_panel_kb(
-                                     is_subscription_required(),
-                                     len(get_open_support_messages())
-                                 ))
+    await call.message.edit_text(
+        "✅ Вопрос закрыт без ответа.",
+        reply_markup=admin_panel_kb(is_subscription_required(),
+                                    len(get_open_support_messages()))
+    )
     await call.answer()
 
 
@@ -177,7 +184,8 @@ async def broadcast_media(message: Message, state: FSMContext):
     elif message.text and message.text.strip() == "-":
         await state.update_data(media_type="none", media_file_id=None)
     else:
-        await message.answer("❌ Отправьте картинку или `-`, чтобы пропустить.", parse_mode="Markdown")
+        await message.answer("❌ Отправьте картинку или `-`, чтобы пропустить.",
+                             parse_mode="Markdown")
         return
     await message.answer("Введите текст рассылки:")
     await state.set_state(AdminForm.waiting_broadcast_text)
@@ -246,9 +254,12 @@ async def _do_broadcast(message: Message, state: FSMContext, bot: Bot, edit: boo
 
     result = f"✅ Рассылка завершена.\nДоставлено: {sent}\nНе доставлено: {failed}"
     if edit:
-        await message.edit_text(result)
+        try:
+            await message.edit_text(result)
+        except Exception:
+            await message.answer(result)
     else:
-        await message.answer(result, reply_markup=main_menu(True))
+        await message.answer(result)
 
 
 # ==================== ОБЯЗАТЕЛЬНАЯ ПОДПИСКА ====================
@@ -290,7 +301,7 @@ async def admin_add_req(call: CallbackQuery, state: FSMContext):
         "➕ <b>Новый канал подписки</b>\n\n"
         "Отправьте данные в формате:\n"
         "<code>@username | Название | https://t.me/username</code>\n\n"
-        "Или просто <code>@username</code>, если название и ссылку можно взять по username.",
+        "Или просто <code>@username</code> — название и ссылку бот соберёт сам.",
         parse_mode="HTML"
     )
     await state.set_state(AdminForm.waiting_required_channel)
@@ -323,8 +334,6 @@ async def admin_del_req(call: CallbackQuery):
     chat_id = call.data.split(":", 1)[1]
     remove_required_channel(chat_id)
     channels = get_required_channels()
-    await call.message.edit_text(
-        "✅ Канал удалён.",
-        reply_markup=required_channels_kb(channels)
-    )
+    await call.message.edit_text("✅ Канал удалён.",
+                                 reply_markup=required_channels_kb(channels))
     await call.answer()

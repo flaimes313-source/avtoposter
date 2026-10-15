@@ -6,7 +6,10 @@ from html import escape
 from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, ChatMemberAdministrator, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, ChatMemberAdministrator,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -18,7 +21,7 @@ from database import (
     get_user_posts, add_user_channel, get_user_channels, remove_user_channel
 )
 from keyboards import (
-    main_menu, media_type_kb, skip_kb, skip_button_kb,
+    main_reply_kb, media_type_kb, skip_kb, skip_button_kb,
     channels_select_kb, my_channels_kb
 )
 
@@ -26,7 +29,6 @@ router = Router()
 
 
 class PostForm(StatesGroup):
-    # Создание отложенного поста
     waiting_media = State()
     waiting_text = State()
     waiting_links = State()
@@ -36,7 +38,6 @@ class PostForm(StatesGroup):
     waiting_calendar = State()
     waiting_time_only = State()
     waiting_channel_pick = State()
-    # Рекламный пост
     waiting_ad_media = State()
     waiting_ad_text = State()
     waiting_ad_links = State()
@@ -44,20 +45,16 @@ class PostForm(StatesGroup):
     waiting_ad_button_name = State()
     waiting_ad_button_url = State()
     waiting_ad_channel_pick = State()
-    # Добавление канала
     waiting_new_channel = State()
 
 
 # ==================== ВСПОМОГАТЕЛЬНОЕ ====================
 
 async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
-    """Проверяет, что бот — админ канала с правом публикации."""
     try:
         chat = await bot.get_chat(channel_id)
         member = await bot.get_chat_member(chat_id=channel_id, user_id=bot.id)
-
         title = escape(chat.title or str(chat.id))
-
         if member.status in ("administrator", "creator"):
             if isinstance(member, ChatMemberAdministrator) and member.can_post_messages:
                 return True, f"✅ {title} — есть право публикации"
@@ -67,11 +64,10 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
         return False, f"❌ Ошибка: {escape(str(e))}"
 
 
-# ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ (добавление канала) ====================
+# ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ ====================
 
 @router.message(F.forward_from_chat)
 async def get_forwarded_channel_id(message: Message, state: FSMContext):
-    """Если пользователь в состоянии waiting_new_channel — сохраняем канал."""
     chat = message.forward_from_chat
     title = chat.title or str(chat.id)
     channel_id = str(chat.id)
@@ -95,7 +91,7 @@ async def get_forwarded_channel_id(message: Message, state: FSMContext):
         )
 
 
-# ==================== ОТЛАДКА ====================
+# ==================== /debug ====================
 
 @router.message(F.text == "/debug")
 async def debug_db(message: Message):
@@ -124,7 +120,6 @@ async def debug_db(message: Message):
     conn.close()
 
     now_utc = datetime.now(timezone.utc).isoformat()
-
     lines = [
         f"🕒 <b>Сейчас UTC:</b> <code>{escape(now_utc)}</code>",
         f"📊 Не отправлено: <b>{pending}</b>",
@@ -132,7 +127,6 @@ async def debug_db(message: Message):
         f"📡 Моих каналов: <b>{len(channels)}</b>\n",
         "<b>Последние 15 постов:</b>"
     ]
-
     if not rows:
         lines.append("📭 Таблица posts пуста")
     else:
@@ -143,16 +137,15 @@ async def debug_db(message: Message):
                 f"    type={escape(str(r['media_type']))} | "
                 f"time=<code>{escape(str(r['scheduled_time']))}</code>"
             )
-
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 # ==================== МОИ КАНАЛЫ ====================
 
-@router.callback_query(F.data == "my_channels")
-async def my_channels_menu(call: CallbackQuery, state: FSMContext, bot):
+@router.message(F.text == "📡 Мои каналы")
+async def my_channels_menu(message: Message, state: FSMContext, bot):
     await state.clear()
-    channels = get_user_channels(call.from_user.id)
+    channels = get_user_channels(message.from_user.id)
 
     if not channels:
         text = (
@@ -171,8 +164,17 @@ async def my_channels_menu(call: CallbackQuery, state: FSMContext, bot):
         text = "\n".join(lines)
         kb = my_channels_kb(channels)
 
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    await call.answer()
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data == "refresh_channels")
+async def refresh_channels(call: CallbackQuery, state: FSMContext, bot):
+    await call.answer("🔄 Обновлено")
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await my_channels_menu(call.message, state, bot)
 
 
 @router.callback_query(F.data == "add_channel")
@@ -194,20 +196,18 @@ async def delete_channel(call: CallbackQuery, state: FSMContext):
     chat_id = call.data.split(":", 1)[1]
     remove_user_channel(call.from_user.id, chat_id)
     channels = get_user_channels(call.from_user.id)
-    await call.message.edit_text(
-        "✅ Канал удалён из списка.",
-        reply_markup=my_channels_kb(channels)
-    )
+    await call.message.edit_text("✅ Канал удалён из списка.",
+                                 reply_markup=my_channels_kb(channels))
     await call.answer()
 
 
 # ==================== СОЗДАНИЕ ПОСТА ====================
 
-@router.callback_query(F.data == "create_post")
-async def create_post_start(call: CallbackQuery, state: FSMContext):
+@router.message(F.text == "📝 Создать пост")
+async def create_post_start(message: Message, state: FSMContext):
     await state.clear()
-    await call.message.edit_text("Выберите тип медиа:", reply_markup=media_type_kb())
-    await call.answer()
+    await state.update_data(is_ad=False)
+    await message.answer("Выберите тип медиа:", reply_markup=media_type_kb())
 
 
 @router.callback_query(F.data.startswith("media_"))
@@ -279,8 +279,6 @@ async def links_received(message: Message, state: FSMContext):
     await state.set_state(PostForm.waiting_emojis)
 
 
-# --- Эмодзи → кнопка → календарь ---
-
 @router.callback_query(F.data == "skip", PostForm.waiting_emojis)
 async def skip_emojis(call: CallbackQuery, state: FSMContext):
     await state.update_data(emojis=[])
@@ -332,8 +330,6 @@ async def button_url_received(message: Message, state: FSMContext):
     await state.set_state(PostForm.waiting_calendar)
 
 
-# --- Календарь ---
-
 @router.callback_query(PostForm.waiting_calendar, SimpleCalendarCallback.filter())
 async def process_calendar(call: CallbackQuery, callback_data: SimpleCalendarCallback, state: FSMContext):
     selected, date = await SimpleCalendar().process_selection(call, callback_data)
@@ -372,7 +368,7 @@ async def time_only_received(message: Message, state: FSMContext):
         await message.answer(
             "❌ У вас нет добавленных каналов.\n\n"
             "Добавьте канал: «📡 Мои каналы» → «➕ Добавить канал».",
-            reply_markup=main_menu(message.from_user.id == ADMIN_ID)
+            reply_markup=main_reply_kb(message.from_user.id == ADMIN_ID)
         )
         await state.clear()
         return
@@ -408,25 +404,21 @@ async def pick_channel(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.edit_text(
         "✅ Пост создан и запланирован!",
-        reply_markup=main_menu(call.from_user.id == ADMIN_ID)
+        reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
     )
     await call.answer()
 
 
 # ==================== СПИСОК ПОСТОВ ====================
 
-@router.callback_query(F.data == "list_posts")
-async def list_posts(call: CallbackQuery):
-    rows = get_user_posts(call.from_user.id)
+@router.message(F.text == "📋 Мои посты")
+async def list_posts(message: Message):
+    rows = get_user_posts(message.from_user.id)
     if not rows:
-        await call.message.edit_text(
-            "📭 У вас пока нет постов.",
-            reply_markup=main_menu(call.from_user.id == ADMIN_ID)
-        )
-        await call.answer()
+        await message.answer("📭 У вас пока нет постов.")
         return
 
-    tz_name = get_user_timezone(call.from_user.id)
+    tz_name = get_user_timezone(message.from_user.id)
     user_tz = ZoneInfo(tz_name)
     lines = ["📋 <b>Ваши последние посты:</b>\n"]
     for r in rows:
@@ -442,21 +434,16 @@ async def list_posts(call: CallbackQuery):
             f"  🕒 {local_dt.strftime('%Y-%m-%d %H:%M')} ({escape(tz_name)})\n"
             f"  📝 {preview}...\n"
         )
-    await call.message.edit_text(
-        "\n".join(lines), parse_mode="HTML",
-        reply_markup=main_menu(call.from_user.id == ADMIN_ID)
-    )
-    await call.answer()
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 # ==================== РЕКЛАМНЫЙ ПОСТ ====================
 
-@router.callback_query(F.data == "create_ad")
-async def create_ad_start(call: CallbackQuery, state: FSMContext):
+@router.message(F.text == "📢 Реклама")
+async def create_ad_start(message: Message, state: FSMContext):
     await state.clear()
     await state.update_data(is_ad=True)
-    await call.message.edit_text("Выберите тип медиа для рекламы:", reply_markup=media_type_kb())
-    await call.answer()
+    await message.answer("Выберите тип медиа для рекламы:", reply_markup=media_type_kb())
 
 
 @router.callback_query(F.data.startswith("media_"))
@@ -549,7 +536,7 @@ async def ad_skip_button(call: CallbackQuery, state: FSMContext):
     if not channels:
         await call.message.edit_text(
             "❌ У вас нет добавленных каналов. Добавьте через «📡 Мои каналы».",
-            reply_markup=main_menu(call.from_user.id == ADMIN_ID)
+            reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
         )
         await state.clear()
         await call.answer()
@@ -577,7 +564,7 @@ async def ad_button_url_received(message: Message, state: FSMContext):
     if not channels:
         await message.answer(
             "❌ У вас нет добавленных каналов. Добавьте через «📡 Мои каналы».",
-            reply_markup=main_menu(message.from_user.id == ADMIN_ID)
+            reply_markup=main_reply_kb(message.from_user.id == ADMIN_ID)
         )
         await state.clear()
         return
@@ -631,12 +618,13 @@ async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
 
         await call.message.edit_text(
             "✅ Рекламный пост опубликован!",
-            reply_markup=main_menu(call.from_user.id == ADMIN_ID)
+            reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
         )
     except Exception as e:
         await call.message.edit_text(
             f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",
-            parse_mode="HTML", reply_markup=main_menu(call.from_user.id == ADMIN_ID)
+            parse_mode="HTML",
+            reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
         )
 
     await state.clear()
