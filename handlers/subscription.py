@@ -7,7 +7,7 @@ from database import (
     is_subscription_required, get_required_channels,
     set_subscription, get_user_timezone
 )
-from keyboards import subscription_check_kb, main_menu
+from keyboards import subscription_check_kb, main_reply_kb
 
 router = Router()
 
@@ -27,7 +27,6 @@ async def user_is_subscribed(bot: Bot, user_id: int) -> tuple[bool, list]:
             if not ok:
                 missing.append(ch)
         except Exception:
-            # Если бот не может проверить — считаем, что не подписан
             missing.append(ch)
     return (len(missing) == 0), missing
 
@@ -51,8 +50,13 @@ async def check_subscription(call: CallbackQuery, state: FSMContext, bot: Bot):
     ok, missing = await user_is_subscribed(bot, call.from_user.id)
     if ok:
         await call.message.edit_text(
-            "✅ Спасибо за подписку! Теперь можно пользоваться ботом.",
-            reply_markup=main_menu(call.from_user.id == ADMIN_ID)
+            "✅ Спасибо за подписку! Теперь можно пользоваться ботом."
+        )
+        # Отправляем reply-меню отдельным сообщением, потому что edit_text
+        # не может поменять reply-клавиатуру
+        await call.message.answer(
+            "🏠 Главное меню",
+            reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
         )
     else:
         await send_subscription_gate(call, bot, missing, is_edit=True)
