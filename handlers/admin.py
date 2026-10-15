@@ -1,5 +1,7 @@
 import json
-import sqlite3
+import sqlite3  # оставлен для /debug; при желании можно переписать на psycopg2
+import psycopg2
+from psycopg2.extras import DictCursor
 from datetime import datetime, timezone
 from html import escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -11,13 +13,13 @@ from aiogram.fsm.state import State, StatesGroup
 
 from aiogram_calendar import SimpleCalendar, SimpleCalendarCallback
 
-from config import ADMIN_ID
+from config import ADMIN_ID, DATABASE_URL
 from database import (
     add_post, add_ad_post, get_user_timezone, set_user_timezone,
     get_user_posts, add_user_channel, get_user_channels, remove_user_channel
 )
 from keyboards import (
-    main_menu, media_type_kb, skip_kb,
+    main_menu, media_type_kb, skip_kb, skip_button_kb,
     channels_select_kb, my_channels_kb
 )
 
@@ -30,6 +32,8 @@ class PostForm(StatesGroup):
     waiting_text = State()
     waiting_links = State()
     waiting_emojis = State()
+    waiting_button_name = State()
+    waiting_button_url = State()
     waiting_calendar = State()
     waiting_time_only = State()
     waiting_channel_pick = State()
@@ -38,10 +42,12 @@ class PostForm(StatesGroup):
     waiting_ad_text = State()
     waiting_ad_links = State()
     waiting_ad_emojis = State()
+    waiting_ad_button_name = State()
+    waiting_ad_button_url = State()
     waiting_ad_channel_pick = State()
     # Часовой пояс
     waiting_timezone = State()
-    # Добавление нового канала
+    # Добавление канала
     waiting_new_channel = State()
 
 
@@ -67,9 +73,8 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
 # ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ (добавление канала) ====================
 
 @router.message(F.forward_from_chat)
-async def get_forwarded_channel_id(message: Message, state: FSMContext, bot):
-    """Обрабатывает пересланные из канала сообщения.
-    Если пользователь в состоянии waiting_new_channel — сохраняем канал."""
+async def get_forwarded_channel_id(message: Message, state: FSMContext):
+    """Если пользователь в состоянии waiting_new_channel — сохраняем канал."""
     chat = message.forward_from_chat
     title = chat.title or str(chat.id)
     channel_id = str(chat.id)
@@ -93,56 +98,31 @@ async def get_forwarded_channel_id(message: Message, state: FSMContext, bot):
         )
 
 
-# ==================== СТАРТ ====================
-
-@router.message(F.text == "/start")
-async def start_handler(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ У вас нет доступа.")
-        return
-    tz = get_user_timezone(message.from_user.id)
-    await message.answer(
-        f"👋 Добро пожаловать в панель управления автопостингом!\n"
-        f"🕒 Ваш часовой пояс: <b>{escape(tz)}</b>\n\n"
-        f"Сменить пояс: /timezone\n"
-        f"Отладка БД: /debug\n\n"
-        f"💡 Сначала добавьте канал через «📡 Мои каналы».",
-        reply_markup=main_menu(),
-        parse_mode="HTML"
-    )
-
-
-@router.callback_query(F.data == "back_main")
-async def back_main(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await call.message.edit_text("👋 Главное меню", reply_markup=main_menu())
-    await call.answer()
-
-
-# ==================== ОТЛАДКА ====================
+# ==================== СТАРТ / ОТЛАДКА / ЧАСОВОЙ ПОЯС ====================
 
 @router.message(F.text == "/debug")
 async def debug_db(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    conn = sqlite3.connect("autoposter.db")
-    cursor = conn.cursor()
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
+    cur = conn.cursor()
 
-    cursor.execute("""
+    cur.execute("""
         SELECT id, channel_id, media_type, scheduled_time, is_sent
         FROM posts ORDER BY id DESC LIMIT 15
     """)
-    rows = cursor.fetchall()
+    rows = cur.fetchall()
 
-    cursor.execute("SELECT COUNT(*) FROM posts WHERE is_sent = 0")
-    pending = cursor.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS c FROM posts WHERE is_sent = 0")
+    pending = cur.fetchone()["c"]
 
-    cursor.execute("SELECT COUNT(*) FROM posts WHERE is_sent = 1")
-    sent = cursor.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS c FROM posts WHERE is_sent = 1")
+    sent = cur.fetchone()["c"]
 
-    cursor.execute("SELECT chat_id, title FROM user_channels WHERE user_id = ?", (message.from_user.id,))
-    channels = cursor.fetchall()
+    cur.execute("SELECT chat_id, title FROM user_channels WHERE user_id = %s",
+                (message.from_user.id,))
+    channels = cur.fetchall()
 
     conn.close()
 
@@ -159,17 +139,16 @@ async def debug_db(message: Message):
     if not rows:
         lines.append("📭 Таблица posts пуста")
     else:
-        for pid, ch, mt, st, is_sent in rows:
-            status = "✅" if is_sent else "⏳"
+        for r in rows:
+            status = "✅" if r["is_sent"] else "⏳"
             lines.append(
-                f"{status} #{pid} | ch=<code>{escape(str(ch))}</code>\n"
-                f"    type={escape(str(mt))} | time=<code>{escape(str(st))}</code>"
+                f"{status} #{r['id']} | ch=<code>{escape(str(r['channel_id']))}</code>\n"
+                f"    type={escape(str(r['media_type']))} | "
+                f"time=<code>{escape(str(r['scheduled_time']))}</code>"
             )
 
     await message.answer("\n".join(lines), parse_mode="HTML")
 
-
-# ==================== ЧАСОВОЙ ПОЯС ====================
 
 @router.message(F.text == "/timezone")
 async def timezone_cmd(message: Message, state: FSMContext):
@@ -190,7 +169,7 @@ async def timezone_cmd(message: Message, state: FSMContext):
 
 @router.message(PostForm.waiting_timezone)
 async def timezone_set(message: Message, state: FSMContext):
-    tz_name = message.text.strip()
+    tz_name = (message.text or "").strip()
     try:
         ZoneInfo(tz_name)
     except ZoneInfoNotFoundError:
@@ -203,7 +182,7 @@ async def timezone_set(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"✅ Пояс установлен: <b>{escape(tz_name)}</b>",
-        reply_markup=main_menu(),
+        reply_markup=main_menu(message.from_user.id == ADMIN_ID),
         parse_mode="HTML"
     )
 
@@ -331,7 +310,7 @@ async def skip_links(call: CallbackQuery, state: FSMContext):
 
 @router.message(PostForm.waiting_links)
 async def links_received(message: Message, state: FSMContext):
-    links = [l.strip() for l in message.text.split("\n") if l.strip()][:3]
+    links = [l.strip() for l in (message.text or "").split("\n") if l.strip()][:3]
     await state.update_data(links=links)
     await message.answer(
         "Введите эмодзи (через пробел). Или «Пропустить»:",
@@ -340,9 +319,34 @@ async def links_received(message: Message, state: FSMContext):
     await state.set_state(PostForm.waiting_emojis)
 
 
+# --- Эмодзи → кнопка ---
+
 @router.callback_query(F.data == "skip", PostForm.waiting_emojis)
 async def skip_emojis(call: CallbackQuery, state: FSMContext):
     await state.update_data(emojis=[])
+    await call.message.edit_text(
+        "🔘 Добавить кнопку под постом?\n\n"
+        "Напишите её название или нажмите «Без кнопки»:",
+        reply_markup=skip_button_kb()
+    )
+    await state.set_state(PostForm.waiting_button_name)
+    await call.answer()
+
+
+@router.message(PostForm.waiting_emojis)
+async def emojis_received(message: Message, state: FSMContext):
+    await state.update_data(emojis=(message.text or "").split())
+    await message.answer(
+        "🔘 Добавить кнопку под постом?\n\n"
+        "Напишите её название или нажмите «Без кнопки»:",
+        reply_markup=skip_button_kb()
+    )
+    await state.set_state(PostForm.waiting_button_name)
+
+
+@router.callback_query(F.data == "skip_button", PostForm.waiting_button_name)
+async def skip_button(call: CallbackQuery, state: FSMContext):
+    await state.update_data(button_text=None, button_url=None)
     await call.message.edit_text(
         "📅 Выберите дату публикации:",
         reply_markup=await SimpleCalendar().start_calendar()
@@ -351,10 +355,16 @@ async def skip_emojis(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@router.message(PostForm.waiting_emojis)
-async def emojis_received(message: Message, state: FSMContext):
-    emojis = message.text.split()
-    await state.update_data(emojis=emojis)
+@router.message(PostForm.waiting_button_name)
+async def button_name_received(message: Message, state: FSMContext):
+    await state.update_data(button_text=message.text)
+    await message.answer("Введите ссылку для кнопки (например, https://t.me/...):")
+    await state.set_state(PostForm.waiting_button_url)
+
+
+@router.message(PostForm.waiting_button_url)
+async def button_url_received(message: Message, state: FSMContext):
+    await state.update_data(button_url=message.text)
     await message.answer(
         "📅 Выберите дату публикации:",
         reply_markup=await SimpleCalendar().start_calendar()
@@ -381,7 +391,7 @@ async def process_calendar(call: CallbackQuery, callback_data: SimpleCalendarCal
 @router.message(PostForm.waiting_time_only)
 async def time_only_received(message: Message, state: FSMContext):
     try:
-        datetime.strptime(message.text.strip(), "%H:%M")
+        datetime.strptime((message.text or "").strip(), "%H:%M")
     except ValueError:
         await message.answer("❌ Формат: <code>ЧЧ:ММ</code>", parse_mode="HTML")
         return
@@ -402,7 +412,7 @@ async def time_only_received(message: Message, state: FSMContext):
         await message.answer(
             "❌ У вас нет добавленных каналов.\n\n"
             "Добавьте канал: «📡 Мои каналы» → «➕ Добавить канал».",
-            reply_markup=main_menu()
+            reply_markup=main_menu(message.from_user.id == ADMIN_ID)
         )
         await state.clear()
         return
@@ -431,10 +441,13 @@ async def pick_channel(call: CallbackQuery, state: FSMContext):
         text=data.get("text"),
         links=json.dumps(data.get("links", [])),
         emojis=json.dumps(data.get("emojis", [])),
+        button_text=data.get("button_text"),
+        button_url=data.get("button_url"),
         scheduled_time_utc=data.get("scheduled_time")
     )
     await state.clear()
-    await call.message.edit_text("✅ Пост создан и запланирован!", reply_markup=main_menu())
+    await call.message.edit_text("✅ Пост создан и запланирован!",
+                                 reply_markup=main_menu(call.from_user.id == ADMIN_ID))
     await call.answer()
 
 
@@ -444,25 +457,29 @@ async def pick_channel(call: CallbackQuery, state: FSMContext):
 async def list_posts(call: CallbackQuery):
     rows = get_user_posts(call.from_user.id)
     if not rows:
-        await call.message.edit_text("📭 У вас пока нет постов.", reply_markup=main_menu())
+        await call.message.edit_text("📭 У вас пока нет постов.",
+                                     reply_markup=main_menu(call.from_user.id == ADMIN_ID))
         await call.answer()
         return
 
     tz_name = get_user_timezone(call.from_user.id)
     user_tz = ZoneInfo(tz_name)
     lines = ["📋 <b>Ваши последние посты:</b>\n"]
-    for pid, channel_id, media_type, text, scheduled_iso, is_sent in rows:
-        utc_dt = datetime.fromisoformat(scheduled_iso)
+    for r in rows:
+        utc_dt = r["scheduled_time"]
+        if isinstance(utc_dt, str):
+            utc_dt = datetime.fromisoformat(utc_dt)
         local_dt = utc_dt.astimezone(user_tz)
-        status = "✅ отправлен" if is_sent else "⏳ ожидает"
-        preview = escape((text or "")[:30].replace("\n", " "))
+        status = "✅ отправлен" if r["is_sent"] else "⏳ ожидает"
+        preview = escape((r["text"] or "")[:30].replace("\n", " "))
         lines.append(
-            f"#{pid} | {status}\n"
-            f"  📢 {escape(str(channel_id))}\n"
+            f"#{r['id']} | {status}\n"
+            f"  📢 {escape(str(r['channel_id']))}\n"
             f"  🕒 {local_dt.strftime('%Y-%m-%d %H:%M')} ({escape(tz_name)})\n"
             f"  📝 {preview}...\n"
         )
-    await call.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=main_menu())
+    await call.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                 reply_markup=main_menu(call.from_user.id == ADMIN_ID))
     await call.answer()
 
 
@@ -530,7 +547,7 @@ async def ad_skip_links(call: CallbackQuery, state: FSMContext):
 
 @router.message(PostForm.waiting_ad_links)
 async def ad_links_received(message: Message, state: FSMContext):
-    links = [l.strip() for l in message.text.split("\n") if l.strip()][:3]
+    links = [l.strip() for l in (message.text or "").split("\n") if l.strip()][:3]
     await state.update_data(links=links)
     await message.answer("Введите эмодзи. Или «Пропустить»:", reply_markup=skip_kb())
     await state.set_state(PostForm.waiting_ad_emojis)
@@ -539,11 +556,34 @@ async def ad_links_received(message: Message, state: FSMContext):
 @router.callback_query(F.data == "skip", PostForm.waiting_ad_emojis)
 async def ad_skip_emojis(call: CallbackQuery, state: FSMContext):
     await state.update_data(emojis=[])
+    await call.message.edit_text(
+        "🔘 Добавить кнопку под рекламой?\n\n"
+        "Напишите её название или нажмите «Без кнопки»:",
+        reply_markup=skip_button_kb()
+    )
+    await state.set_state(PostForm.waiting_ad_button_name)
+    await call.answer()
+
+
+@router.message(PostForm.waiting_ad_emojis)
+async def ad_emojis_received(message: Message, state: FSMContext):
+    await state.update_data(emojis=(message.text or "").split())
+    await message.answer(
+        "🔘 Добавить кнопку под рекламой?\n\n"
+        "Напишите её название или нажмите «Без кнопки»:",
+        reply_markup=skip_button_kb()
+    )
+    await state.set_state(PostForm.waiting_ad_button_name)
+
+
+@router.callback_query(F.data == "skip_button", PostForm.waiting_ad_button_name)
+async def ad_skip_button(call: CallbackQuery, state: FSMContext):
+    await state.update_data(button_text=None, button_url=None)
     channels = get_user_channels(call.from_user.id)
     if not channels:
         await call.message.edit_text(
             "❌ У вас нет добавленных каналов. Добавьте через «📡 Мои каналы».",
-            reply_markup=main_menu()
+            reply_markup=main_menu(call.from_user.id == ADMIN_ID)
         )
         await state.clear()
         await call.answer()
@@ -557,14 +597,21 @@ async def ad_skip_emojis(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@router.message(PostForm.waiting_ad_emojis)
-async def ad_emojis_received(message: Message, state: FSMContext):
-    await state.update_data(emojis=message.text.split())
+@router.message(PostForm.waiting_ad_button_name)
+async def ad_button_name_received(message: Message, state: FSMContext):
+    await state.update_data(button_text=message.text)
+    await message.answer("Введите ссылку для кнопки (например, https://t.me/...):")
+    await state.set_state(PostForm.waiting_ad_button_url)
+
+
+@router.message(PostForm.waiting_ad_button_url)
+async def ad_button_url_received(message: Message, state: FSMContext):
+    await state.update_data(button_url=message.text)
     channels = get_user_channels(message.from_user.id)
     if not channels:
         await message.answer(
             "❌ У вас нет добавленных каналов. Добавьте через «📡 Мои каналы».",
-            reply_markup=main_menu()
+            reply_markup=main_menu(message.from_user.id == ADMIN_ID)
         )
         await state.clear()
         return
@@ -578,6 +625,8 @@ async def ad_emojis_received(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("pick_ad_channel:"))
 async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
     channel_id = call.data.split(":", 1)[1]
     data = await state.get_data()
 
@@ -587,7 +636,9 @@ async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
         media_file_id=data.get("media_file_id"),
         text=data.get("text"),
         links=json.dumps(data.get("links", [])),
-        emojis=json.dumps(data.get("emojis", []))
+        emojis=json.dumps(data.get("emojis", [])),
+        button_text=data.get("button_text"),
+        button_url=data.get("button_url")
     )
 
     links = data.get("links", [])
@@ -598,18 +649,28 @@ async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
     if links:
         full_text += "\n\n" + "\n".join(links)
 
+    kb = None
+    if data.get("button_text") and data.get("button_url"):
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=data["button_text"], url=data["button_url"])
+        ]])
+
     try:
         if data.get("media_type") == "photo" and data.get("media_file_id"):
-            await bot.send_photo(chat_id=channel_id, photo=data["media_file_id"], caption=full_text)
+            await bot.send_photo(chat_id=channel_id, photo=data["media_file_id"],
+                                 caption=full_text, reply_markup=kb)
         elif data.get("media_type") == "animation" and data.get("media_file_id"):
-            await bot.send_animation(chat_id=channel_id, animation=data["media_file_id"], caption=full_text)
+            await bot.send_animation(chat_id=channel_id, animation=data["media_file_id"],
+                                     caption=full_text, reply_markup=kb)
         else:
-            await bot.send_message(chat_id=channel_id, text=full_text)
-        await call.message.edit_text("✅ Рекламный пост опубликован!", reply_markup=main_menu())
+            await bot.send_message(chat_id=channel_id, text=full_text, reply_markup=kb)
+
+        await call.message.edit_text("✅ Рекламный пост опубликован!",
+                                     reply_markup=main_menu(call.from_user.id == ADMIN_ID))
     except Exception as e:
         await call.message.edit_text(
             f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",
-            parse_mode="HTML", reply_markup=main_menu()
+            parse_mode="HTML", reply_markup=main_menu(call.from_user.id == ADMIN_ID)
         )
 
     await state.clear()
