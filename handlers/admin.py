@@ -67,6 +67,22 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
         return False, f"❌ Ошибка: {escape(str(e))}"
 
 
+async def show_main_menu_after_edit(call: CallbackQuery, text: str):
+    """Безопасно редактирует сообщение и отдельно отправляет reply-меню."""
+    try:
+        await call.message.edit_text(text)
+    except Exception:
+        try:
+            await call.message.answer(text)
+        except Exception:
+            pass
+
+    await call.message.answer(
+        "🏠 Главное меню",
+        reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
+    )
+
+
 # ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ ====================
 
 @router.message(F.forward_from_chat)
@@ -401,10 +417,7 @@ async def pick_channel(call: CallbackQuery, state: FSMContext):
         scheduled_time_utc=data.get("scheduled_time")
     )
     await state.clear()
-    await call.message.edit_text(
-        "✅ Пост создан и запланирован!",
-        reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
-    )
+    await show_main_menu_after_edit(call, "✅ Пост создан и запланирован!")
     await call.answer()
 
 
@@ -530,7 +543,10 @@ async def ad_skip_button(call: CallbackQuery, state: FSMContext):
     channels = get_user_channels(call.from_user.id)
     if not channels:
         await call.message.edit_text(
-            "❌ У вас нет добавленных каналов. Добавьте через «📡 Мои каналы».",
+            "❌ У вас нет добавленных каналов. Добавьте через «📡 Мои каналы»."
+        )
+        await call.message.answer(
+            "🏠 Главное меню",
             reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
         )
         await state.clear()
@@ -611,14 +627,20 @@ async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
         else:
             await bot.send_message(chat_id=channel_id, text=full_text, reply_markup=kb)
 
-        await call.message.edit_text(
-            "✅ Рекламный пост опубликован!",
-            reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
-        )
+        await show_main_menu_after_edit(call, "✅ Рекламный пост опубликован!")
     except Exception as e:
-        await call.message.edit_text(
-            f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",
-            parse_mode="HTML",
+        try:
+            await call.message.edit_text(
+                f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            await call.message.answer(
+                f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",
+                parse_mode="HTML"
+            )
+        await call.message.answer(
+            "🏠 Главное меню",
             reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
         )
 
