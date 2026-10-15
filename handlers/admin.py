@@ -29,6 +29,7 @@ router = Router()
 
 
 class PostForm(StatesGroup):
+    # Обычный пост
     waiting_media = State()
     waiting_text = State()
     waiting_links = State()
@@ -38,6 +39,7 @@ class PostForm(StatesGroup):
     waiting_calendar = State()
     waiting_time_only = State()
     waiting_channel_pick = State()
+    # Реклама
     waiting_ad_media = State()
     waiting_ad_text = State()
     waiting_ad_links = State()
@@ -45,6 +47,7 @@ class PostForm(StatesGroup):
     waiting_ad_button_name = State()
     waiting_ad_button_url = State()
     waiting_ad_channel_pick = State()
+    # Добавление канала
     waiting_new_channel = State()
 
 
@@ -207,15 +210,11 @@ async def delete_channel(call: CallbackQuery, state: FSMContext):
 async def create_post_start(message: Message, state: FSMContext):
     await state.clear()
     await state.update_data(is_ad=False)
-    await message.answer("Выберите тип медиа:", reply_markup=media_type_kb())
+    await message.answer("Выберите тип медиа:", reply_markup=media_type_kb(is_ad=False))
 
 
 @router.callback_query(F.data.startswith("media_"))
 async def media_chosen(call: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    if data.get("is_ad"):
-        return
-
     media_type = call.data.replace("media_", "")
     await state.update_data(media_type=media_type, is_ad=False)
 
@@ -443,17 +442,13 @@ async def list_posts(message: Message):
 async def create_ad_start(message: Message, state: FSMContext):
     await state.clear()
     await state.update_data(is_ad=True)
-    await message.answer("Выберите тип медиа для рекламы:", reply_markup=media_type_kb())
+    await message.answer("Выберите тип медиа для рекламы:", reply_markup=media_type_kb(is_ad=True))
 
 
-@router.callback_query(F.data.startswith("media_"))
+@router.callback_query(F.data.startswith("admedia_"))
 async def ad_media_chosen(call: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    if not data.get("is_ad"):
-        return
-
-    media_type = call.data.replace("media_", "")
-    await state.update_data(media_type=media_type)
+    media_type = call.data.replace("admedia_", "")
+    await state.update_data(media_type=media_type, is_ad=True)
 
     if media_type == "none":
         await state.update_data(media_file_id=None)

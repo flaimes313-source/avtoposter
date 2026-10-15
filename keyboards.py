@@ -51,13 +51,15 @@ def timezone_presets_kb():
     ])
 
 
-def media_type_kb():
+def media_type_kb(is_ad: bool = False):
+    """Разные префиксы callback, чтобы обычный пост и реклама не пересекались."""
+    prefix = "admedia_" if is_ad else "media_"
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🖼 Картинка", callback_data="media_photo"),
-            InlineKeyboardButton(text="🎞 GIF", callback_data="media_animation"),
+            InlineKeyboardButton(text="🖼 Картинка", callback_data=f"{prefix}photo"),
+            InlineKeyboardButton(text="🎞 GIF",      callback_data=f"{prefix}animation"),
         ],
-        [InlineKeyboardButton(text="📄 Только текст", callback_data="media_none")],
+        [InlineKeyboardButton(text="📄 Только текст", callback_data=f"{prefix}none")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
     ])
 
