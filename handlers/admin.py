@@ -67,8 +67,8 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
         return False, f"❌ Ошибка: {escape(str(e))}"
 
 
-async def show_main_menu_after_edit(call: CallbackQuery, text: str):
-    """Безопасно редактирует сообщение и отдельно отправляет reply-меню."""
+async def replace_and_show_menu(call: CallbackQuery, text: str):
+    """Безопасно редактирует сообщение, потом отправляет reply-меню отдельно."""
     try:
         await call.message.edit_text(text)
     except Exception:
@@ -76,11 +76,13 @@ async def show_main_menu_after_edit(call: CallbackQuery, text: str):
             await call.message.answer(text)
         except Exception:
             pass
-
-    await call.message.answer(
-        "🏠 Главное меню",
-        reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
-    )
+    try:
+        await call.message.answer(
+            "🏠 Главное меню",
+            reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
+        )
+    except Exception:
+        pass
 
 
 # ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ ====================
@@ -417,7 +419,7 @@ async def pick_channel(call: CallbackQuery, state: FSMContext):
         scheduled_time_utc=data.get("scheduled_time")
     )
     await state.clear()
-    await show_main_menu_after_edit(call, "✅ Пост создан и запланирован!")
+    await replace_and_show_menu(call, "✅ Пост создан и запланирован!")
     await call.answer()
 
 
@@ -542,9 +544,10 @@ async def ad_skip_button(call: CallbackQuery, state: FSMContext):
     await state.update_data(button_text=None, button_url=None)
     channels = get_user_channels(call.from_user.id)
     if not channels:
-        await call.message.edit_text(
-            "❌ У вас нет добавленных каналов. Добавьте через «📡 Мои каналы»."
-        )
+        try:
+            await call.message.edit_text("❌ У вас нет добавленных каналов.")
+        except Exception:
+            await call.message.answer("❌ У вас нет добавленных каналов.")
         await call.message.answer(
             "🏠 Главное меню",
             reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
@@ -627,18 +630,13 @@ async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
         else:
             await bot.send_message(chat_id=channel_id, text=full_text, reply_markup=kb)
 
-        await show_main_menu_after_edit(call, "✅ Рекламный пост опубликован!")
+        await replace_and_show_menu(call, "✅ Рекламный пост опубликован!")
     except Exception as e:
+        error_text = f"❌ Ошибка публикации: <code>{escape(str(e))}</code>"
         try:
-            await call.message.edit_text(
-                f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",
-                parse_mode="HTML"
-            )
+            await call.message.edit_text(error_text, parse_mode="HTML")
         except Exception:
-            await call.message.answer(
-                f"❌ Ошибка публикации: <code>{escape(str(e))}</code>",
-                parse_mode="HTML"
-            )
+            await call.message.answer(error_text, parse_mode="HTML")
         await call.message.answer(
             "🏠 Главное меню",
             reply_markup=main_reply_kb(call.from_user.id == ADMIN_ID)
