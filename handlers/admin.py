@@ -32,19 +32,17 @@ class PostForm(StatesGroup):
     waiting_emojis = State()
     waiting_calendar = State()
     waiting_time_only = State()
-    waiting_channel_pick = State()          # выбор канала кнопкой
+    waiting_channel_pick = State()
     # Рекламный пост
     waiting_ad_media = State()
     waiting_ad_text = State()
     waiting_ad_links = State()
     waiting_ad_emojis = State()
-    waiting_ad_channel_pick = State()       # выбор канала кнопкой
+    waiting_ad_channel_pick = State()
     # Часовой пояс
     waiting_timezone = State()
     # Добавление нового канала
     waiting_new_channel = State()
-    # Проверка каналов
-    waiting_channel_to_check = State()
 
 
 # ==================== ВСПОМОГАТЕЛЬНОЕ ====================
@@ -66,20 +64,18 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
         return False, f"❌ Ошибка: {escape(str(e))}"
 
 
-# ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ (только для добавления канала) ====================
+# ==================== ПЕРЕСЛАННЫЕ СООБЩЕНИЯ (добавление канала) ====================
 
 @router.message(F.forward_from_chat)
 async def get_forwarded_channel_id(message: Message, state: FSMContext, bot):
     """Обрабатывает пересланные из канала сообщения.
-    Если пользователь в состоянии waiting_new_channel — сохраняем канал.
-    Иначе просто показываем ID."""
+    Если пользователь в состоянии waiting_new_channel — сохраняем канал."""
     chat = message.forward_from_chat
     title = chat.title or str(chat.id)
     channel_id = str(chat.id)
 
     current_state = await state.get_state()
 
-    # Показываем ID пользователю (всегда)
     await message.answer(
         f"📢 Канал: <b>{escape(title)}</b>\n"
         f"🆔 ID: <code>{channel_id}</code>",
@@ -87,7 +83,6 @@ async def get_forwarded_channel_id(message: Message, state: FSMContext, bot):
     )
 
     if current_state == PostForm.waiting_new_channel.state:
-        # Сохраняем канал
         add_user_channel(message.from_user.id, channel_id, title)
         await state.clear()
         channels = get_user_channels(message.from_user.id)
@@ -216,7 +211,7 @@ async def timezone_set(message: Message, state: FSMContext):
 # ==================== МОИ КАНАЛЫ ====================
 
 @router.callback_query(F.data == "my_channels")
-async def my_channels_menu(call: CallbackQuery, state: FSMContext):
+async def my_channels_menu(call: CallbackQuery, state: FSMContext, bot):
     await state.clear()
     channels = get_user_channels(call.from_user.id)
 
@@ -224,15 +219,20 @@ async def my_channels_menu(call: CallbackQuery, state: FSMContext):
         text = (
             "📡 <b>Мои каналы</b>\n\n"
             "У вас пока нет добавленных каналов.\n\n"
-            "Нажмите «➕ Добавить канал», затем перешлите боту любое сообщение из нужного канала."
+            "Нажмите «➕ Добавить канал», затем перешлите боту любое "
+            "сообщение из нужного канала."
         )
+        kb = my_channels_kb([])
     else:
-        text = "📡 <b>Мои каналы</b>\n\nВыберите канал, чтобы удалить, или добавьте новый:"
+        lines = ["📡 <b>Мои каналы</b>\n"]
+        for chat_id, title in channels:
+            ok, msg = await check_bot_in_channel(bot, chat_id)
+            lines.append(f"• {msg}")
+        lines.append("\nВыберите канал для удаления или добавьте новый:")
+        text = "\n".join(lines)
+        kb = my_channels_kb(channels)
 
-    await call.message.edit_text(
-        text, parse_mode="HTML",
-        reply_markup=my_channels_kb(channels)
-    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await call.answer()
 
 
@@ -240,7 +240,8 @@ async def my_channels_menu(call: CallbackQuery, state: FSMContext):
 async def add_channel_start(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(
         "➕ <b>Добавление канала</b>\n\n"
-        "1. Убедитесь, что бот добавлен в канал как админ с правом «Публикация сообщений».\n"
+        "1. Убедитесь, что бот добавлен в канал как админ с правом "
+        "«Публикация сообщений».\n"
         "2. Перешлите боту любое сообщение из этого канала.\n\n"
         "Бот сам определит ID и сохранит канал в ваш список.",
         parse_mode="HTML"
@@ -258,29 +259,6 @@ async def delete_channel(call: CallbackQuery, state: FSMContext):
         "✅ Канал удалён из списка.",
         reply_markup=my_channels_kb(channels)
     )
-    await call.answer()
-
-
-# ==================== ПРОВЕРКА КАНАЛОВ ====================
-
-@router.callback_query(F.data == "check_channels")
-async def check_channels_menu(call: CallbackQuery, state: FSMContext, bot):
-    channels = get_user_channels(call.from_user.id)
-
-    lines = ["🔍 <b>Проверка каналов</b>\n"]
-
-    if channels:
-        for chat_id, title in channels:
-            ok, msg = await check_bot_in_channel(bot, chat_id)
-            lines.append(f"• {msg}")
-    else:
-        lines.append("📭 У вас пока нет добавленных каналов.\n")
-
-    lines.append(
-        "\n💡 Добавить канал: «📡 Мои каналы» → «➕ Добавить канал»."
-    )
-
-    await call.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=main_menu())
     await call.answer()
 
 

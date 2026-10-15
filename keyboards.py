@@ -7,7 +7,6 @@ def main_menu():
         [InlineKeyboardButton(text="📢 Рекламный пост", callback_data="create_ad")],
         [InlineKeyboardButton(text="📋 Мои посты", callback_data="list_posts")],
         [InlineKeyboardButton(text="📡 Мои каналы", callback_data="my_channels")],
-        [InlineKeyboardButton(text="🔍 Проверить каналы", callback_data="check_channels")],
     ])
 
 
@@ -44,7 +43,9 @@ def channels_select_kb(channels, action_prefix="pick_channel"):
 
 
 def my_channels_kb(channels):
-    """Клавиатура управления каналами."""
+    """Клавиатура управления каналами.
+    channels — список кортежей (chat_id, title).
+    """
     buttons = []
     for chat_id, title in channels:
         buttons.append([
@@ -54,5 +55,6 @@ def my_channels_kb(channels):
             )
         ])
     buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data="add_channel")])
+    buttons.append([InlineKeyboardButton(text="🔄 Обновить статус", callback_data="my_channels")])
     buttons.append([InlineKeyboardButton(text="⬅ Назад", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
