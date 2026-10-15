@@ -1,9 +1,9 @@
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, MessageEntity
 from aiogram.exceptions import TelegramForbiddenError
 
 from database import (
@@ -18,23 +18,34 @@ logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
+def deserialize_entities(json_str):
+    """Превращает JSON-строку в список MessageEntity."""
+    if not json_str:
+        return None
+    data = json.loads(json_str)
+    return [MessageEntity(**e) for e in data]
+
+
 async def check_scheduled_posts(bot):
     logger.info("⏰ Проверка запланированных постов...")
     posts = get_pending_posts()
     logger.info(f"Найдено постов для отправки: {len(posts)}")
 
     for post in posts:
-        (post_id, channel_id, media_type, media_file_id, text,
+        (post_id, channel_id, media_type, media_file_id, text, text_entities_json,
          links_json, emojis_json, button_text, button_url) = post
 
+        text_entities = deserialize_entities(text_entities_json)
         links = json.loads(links_json) if links_json else []
         emojis = json.loads(emojis_json) if emojis_json else []
 
-        full_text = (text or "")
+        extra = ""
         if emojis:
-            full_text += "\n\n" + " ".join(emojis)
+            extra += "\n\n" + " ".join(emojis)
         if links:
-            full_text += "\n\n" + "\n".join(links)
+            extra += "\n\n" + "\n".join(links)
+
+        full_text = (text or "") + extra
 
         kb = None
         if button_text and button_url:
@@ -42,15 +53,21 @@ async def check_scheduled_posts(bot):
                 InlineKeyboardButton(text=button_text, url=button_url)
             ]])
 
+        kwargs = {
+            "chat_id": channel_id,
+            "reply_markup": kb,
+            "parse_mode": None,
+        }
+        if text_entities:
+            kwargs["entities"] = text_entities
+
         try:
             if media_type == "photo" and media_file_id:
-                await bot.send_photo(chat_id=channel_id, photo=media_file_id,
-                                     caption=full_text, reply_markup=kb)
+                await bot.send_photo(photo=media_file_id, caption=full_text, **kwargs)
             elif media_type == "animation" and media_file_id:
-                await bot.send_animation(chat_id=channel_id, animation=media_file_id,
-                                         caption=full_text, reply_markup=kb)
+                await bot.send_animation(animation=media_file_id, caption=full_text, **kwargs)
             else:
-                await bot.send_message(chat_id=channel_id, text=full_text, reply_markup=kb)
+                await bot.send_message(text=full_text, **kwargs)
 
             mark_sent(post_id)
             logger.info(f"✅ Пост #{post_id} отправлен в {channel_id}")
@@ -59,8 +76,6 @@ async def check_scheduled_posts(bot):
 
 
 async def weekly_subscription_check(bot):
-    """Раз в сутки пробегаемся по пользователям, у которых прошло 7 дней.
-    Если появился новый канал подписки — предлагаем подписаться."""
     if not is_subscription_required():
         return
 
@@ -92,7 +107,8 @@ async def weekly_subscription_check(bot):
                 if not url.startswith("http"):
                     url = f"https://t.me/{url.lstrip('@')}"
                 buttons.append([InlineKeyboardButton(text=f"📢 {ch['title']}", url=url)])
-            buttons.append([InlineKeyboardButton(text="✅ Я подписался", callback_data="check_subscription")])
+            buttons.append([InlineKeyboardButton(text="✅ Я подписался",
+                                                 callback_data="check_subscription")])
 
             try:
                 await bot.send_message(uid, text, parse_mode="HTML",
@@ -107,7 +123,6 @@ async def weekly_subscription_check(bot):
 
 def start_scheduler(bot):
     scheduler.add_job(check_scheduled_posts, "interval", minutes=1, args=[bot])
-    # Раз в 6 часов проверяем, у кого прошло 7+ дней
     scheduler.add_job(weekly_subscription_check, "interval", hours=6, args=[bot])
     scheduler.start()
     logger.info("🚀 Планировщик запущен")

@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import (
     Message, CallbackQuery, ChatMemberAdministrator,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton, MessageEntity
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -29,7 +29,6 @@ router = Router()
 
 
 class PostForm(StatesGroup):
-    # Обычный пост
     waiting_media = State()
     waiting_text = State()
     waiting_links = State()
@@ -39,7 +38,6 @@ class PostForm(StatesGroup):
     waiting_calendar = State()
     waiting_time_only = State()
     waiting_channel_pick = State()
-    # Реклама
     waiting_ad_media = State()
     waiting_ad_text = State()
     waiting_ad_links = State()
@@ -47,8 +45,32 @@ class PostForm(StatesGroup):
     waiting_ad_button_name = State()
     waiting_ad_button_url = State()
     waiting_ad_channel_pick = State()
-    # Добавление канала
     waiting_new_channel = State()
+
+
+# ==================== СЕРИАЛИЗАЦИЯ ENTITIES ====================
+
+def serialize_entities(entities):
+    if not entities:
+        return None
+    return json.dumps([
+        {
+            "type": e.type,
+            "offset": e.offset,
+            "length": e.length,
+            "url": e.url,
+            "language": e.language,
+            "custom_emoji_id": e.custom_emoji_id,
+        }
+        for e in entities
+    ])
+
+
+def deserialize_entities(json_str):
+    if not json_str:
+        return None
+    data = json.loads(json_str)
+    return [MessageEntity(**e) for e in data]
 
 
 # ==================== ВСПОМОГАТЕЛЬНОЕ ====================
@@ -68,7 +90,6 @@ async def check_bot_in_channel(bot, channel_id: str) -> tuple[bool, str]:
 
 
 async def replace_and_show_menu(call: CallbackQuery, text: str):
-    """Безопасно редактирует сообщение, потом отправляет reply-меню отдельно."""
     try:
         await call.message.edit_text(text)
     except Exception:
@@ -121,23 +142,18 @@ async def debug_db(message: Message):
 
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
     cur = conn.cursor()
-
     cur.execute("""
         SELECT id, channel_id, media_type, scheduled_time, is_sent
         FROM posts ORDER BY id DESC LIMIT 15
     """)
     rows = cur.fetchall()
-
     cur.execute("SELECT COUNT(*) AS c FROM posts WHERE is_sent = 0")
     pending = cur.fetchone()["c"]
-
     cur.execute("SELECT COUNT(*) AS c FROM posts WHERE is_sent = 1")
     sent = cur.fetchone()["c"]
-
     cur.execute("SELECT chat_id, title FROM user_channels WHERE user_id = %s",
                 (message.from_user.id,))
     channels = cur.fetchall()
-
     conn.close()
 
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -266,7 +282,10 @@ async def media_received(message: Message, state: FSMContext):
 
 @router.message(PostForm.waiting_text)
 async def text_received(message: Message, state: FSMContext):
-    await state.update_data(text=message.text)
+    await state.update_data(
+        text=message.text or message.caption or "",
+        text_entities=serialize_entities(message.entities or message.caption_entities)
+    )
     await message.answer(
         "Введите ссылки (до 3, каждая с новой строки). Или «Пропустить»:",
         reply_markup=skip_kb()
@@ -412,6 +431,7 @@ async def pick_channel(call: CallbackQuery, state: FSMContext):
         media_type=data.get("media_type"),
         media_file_id=data.get("media_file_id"),
         text=data.get("text"),
+        text_entities=data.get("text_entities"),
         links=json.dumps(data.get("links", [])),
         emojis=json.dumps(data.get("emojis", [])),
         button_text=data.get("button_text"),
@@ -495,7 +515,10 @@ async def ad_media_received(message: Message, state: FSMContext):
 
 @router.message(PostForm.waiting_ad_text)
 async def ad_text_received(message: Message, state: FSMContext):
-    await state.update_data(text=message.text)
+    await state.update_data(
+        text=message.text or message.caption or "",
+        text_entities=serialize_entities(message.entities or message.caption_entities)
+    )
     await message.answer("Введите ссылки (до 3). Или «Пропустить»:", reply_markup=skip_kb())
     await state.set_state(PostForm.waiting_ad_links)
 
@@ -600,19 +623,22 @@ async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
         media_type=data.get("media_type"),
         media_file_id=data.get("media_file_id"),
         text=data.get("text"),
+        text_entities=data.get("text_entities"),
         links=json.dumps(data.get("links", [])),
         emojis=json.dumps(data.get("emojis", [])),
         button_text=data.get("button_text"),
         button_url=data.get("button_url")
     )
 
+    text_entities = deserialize_entities(data.get("text_entities"))
     links = data.get("links", [])
     emojis = data.get("emojis", [])
-    full_text = (data.get("text") or "")
+    extra = ""
     if emojis:
-        full_text += "\n\n" + " ".join(emojis)
+        extra += "\n\n" + " ".join(emojis)
     if links:
-        full_text += "\n\n" + "\n".join(links)
+        extra += "\n\n" + "\n".join(links)
+    full_text = (data.get("text") or "") + extra
 
     kb = None
     if data.get("button_text") and data.get("button_url"):
@@ -620,15 +646,21 @@ async def pick_ad_channel(call: CallbackQuery, state: FSMContext, bot):
             InlineKeyboardButton(text=data["button_text"], url=data["button_url"])
         ]])
 
+    kwargs = {
+        "chat_id": channel_id,
+        "reply_markup": kb,
+        "parse_mode": None,
+    }
+    if text_entities:
+        kwargs["entities"] = text_entities
+
     try:
         if data.get("media_type") == "photo" and data.get("media_file_id"):
-            await bot.send_photo(chat_id=channel_id, photo=data["media_file_id"],
-                                 caption=full_text, reply_markup=kb)
+            await bot.send_photo(photo=data["media_file_id"], caption=full_text, **kwargs)
         elif data.get("media_type") == "animation" and data.get("media_file_id"):
-            await bot.send_animation(chat_id=channel_id, animation=data["media_file_id"],
-                                     caption=full_text, reply_markup=kb)
+            await bot.send_animation(animation=data["media_file_id"], caption=full_text, **kwargs)
         else:
-            await bot.send_message(chat_id=channel_id, text=full_text, reply_markup=kb)
+            await bot.send_message(text=full_text, **kwargs)
 
         await replace_and_show_menu(call, "✅ Рекламный пост опубликован!")
     except Exception as e:

@@ -52,15 +52,16 @@ def get_all_user_ids():
 # ==================== POSTS ====================
 
 def add_post(user_id, channel_id, media_type, media_file_id, text,
-             links, emojis, button_text, button_url, scheduled_time_utc):
+             text_entities, links, emojis, button_text, button_url,
+             scheduled_time_utc):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO posts
-            (user_id, channel_id, media_type, media_file_id, text, links, emojis,
-             button_text, button_url, scheduled_time)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """, (user_id, channel_id, media_type, media_file_id, text,
+            (user_id, channel_id, media_type, media_file_id, text, text_entities,
+             links, emojis, button_text, button_url, scheduled_time)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (user_id, channel_id, media_type, media_file_id, text, text_entities,
           links, emojis, button_text, button_url, scheduled_time_utc))
     conn.commit()
     conn.close()
@@ -71,8 +72,8 @@ def get_pending_posts(limit=10):
     cur = conn.cursor()
     now_utc = datetime.now(timezone.utc)
     cur.execute("""
-        SELECT id, channel_id, media_type, media_file_id, text, links, emojis,
-               button_text, button_url
+        SELECT id, channel_id, media_type, media_file_id, text, text_entities,
+               links, emojis, button_text, button_url
         FROM posts
         WHERE is_sent = 0 AND scheduled_time <= %s
         ORDER BY scheduled_time ASC
@@ -108,17 +109,17 @@ def get_user_posts(user_id: int, limit=20):
 
 # ==================== AD POSTS ====================
 
-def add_ad_post(user_id, media_type, media_file_id, text, links, emojis,
-                button_text, button_url):
+def add_ad_post(user_id, media_type, media_file_id, text, text_entities,
+                links, emojis, button_text, button_url):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO ad_posts
-            (user_id, media_type, media_file_id, text, links, emojis,
-             button_text, button_url)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    """, (user_id, media_type, media_file_id, text, links, emojis,
-          button_text, button_url))
+            (user_id, media_type, media_file_id, text, text_entities,
+             links, emojis, button_text, button_url)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (user_id, media_type, media_file_id, text, text_entities,
+          links, emojis, button_text, button_url))
     conn.commit()
     conn.close()
 
@@ -206,7 +207,7 @@ def mark_support_answered(msg_id: int):
     conn.close()
 
 
-# ==================== REQUIRED CHANNELS (рекламные кампании) ====================
+# ==================== REQUIRED CHANNELS ====================
 
 def add_required_channel(chat_id: str, title: str, url: str):
     conn = get_connection()
@@ -303,7 +304,6 @@ def set_subscription(user_id: int, chat_id: str, is_subscribed: bool):
 
 
 def get_users_for_weekly_check():
-    """Пользователи, у которых последняя проверка была больше 7 дней назад (или никогда)."""
     conn = get_connection()
     cur = conn.cursor()
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
